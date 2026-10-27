@@ -9,7 +9,7 @@ test("a user can complete the incident workflow without cross-tenant access", as
   page,
   browser,
 }) => {
-  test.setTimeout(150_000);
+  test.setTimeout(300_000);
   const email = `signalforge-e2e-${randomUUID()}@example.test`;
   const invitedEmail = `signalforge-viewer-${randomUUID()}@example.test`;
   const slug = `e2e-${randomUUID().slice(0, 8)}`;
@@ -593,31 +593,31 @@ test("a user can complete the incident workflow without cross-tenant access", as
   );
   expect(unauthenticatedRunner.status()).toBe(401);
 
-  const keysBeforeRotationResponse = await page.request.get(
+  const createRotationKeyResponse = await page.request.post(
     `http://localhost:4000/v1/projects/${ownerProjectId}/api-keys`,
-    { headers: { "x-organization-id": createdOrganizationId } },
+    {
+      headers: { "x-organization-id": createdOrganizationId },
+      data: { name: "Rotation verification key" },
+    },
   );
-  expect(keysBeforeRotationResponse.status()).toBe(200);
-  const keysBeforeRotationPayload: unknown =
-    await keysBeforeRotationResponse.json();
+  expect(
+    createRotationKeyResponse.status(),
+    await createRotationKeyResponse.text(),
+  ).toBe(201);
+  const createRotationKeyPayload: unknown =
+    await createRotationKeyResponse.json();
   if (
-    !isObject(keysBeforeRotationPayload) ||
-    !Array.isArray(keysBeforeRotationPayload.data)
+    !isObject(createRotationKeyPayload) ||
+    !isObject(createRotationKeyPayload.data) ||
+    typeof createRotationKeyPayload.data.id !== "string" ||
+    typeof createRotationKeyPayload.data.plaintext !== "string"
   )
-    throw new Error("The API key list before rotation was malformed.");
-  const activeKeyBeforeRotation = keysBeforeRotationPayload.data.find(
-    (item): item is Record<string, unknown> =>
-      isObject(item) && item.revokedAt === null,
-  );
-  if (
-    !activeKeyBeforeRotation ||
-    typeof activeKeyBeforeRotation.id !== "string"
-  )
-    throw new Error("No active API key is available for rotation.");
-  const rotationApiKeyId = activeKeyBeforeRotation.id;
+    throw new Error("The rotation verification key response was malformed.");
+  const rotationOldKeyId = createRotationKeyPayload.data.id;
+  const rotationOldKey = createRotationKeyPayload.data.plaintext;
 
   const keyRotationResponse = await page.request.post(
-    `http://localhost:4000/v1/api-keys/${rotationApiKeyId}/rotate`,
+    `http://localhost:4000/v1/api-keys/${rotationOldKeyId}/rotate`,
     { headers: { "x-organization-id": createdOrganizationId } },
   );
   expect(keyRotationResponse.status(), await keyRotationResponse.text()).toBe(
@@ -633,7 +633,8 @@ test("a user can complete the incident workflow without cross-tenant access", as
     throw new Error("The rotated API key response was malformed.");
   const rotatedProjectKey = keyRotationPayload.data.plaintext;
   const rotatedKeyId = keyRotationPayload.data.id;
-  expect(rotatedKeyId).not.toBe(rotationApiKeyId);
+  expect(rotatedKeyId).not.toBe(rotationOldKeyId);
+
   const keysAfterRotationResponse = await page.request.get(
     `http://localhost:4000/v1/projects/${ownerProjectId}/api-keys`,
     { headers: { "x-organization-id": createdOrganizationId } },
@@ -648,7 +649,7 @@ test("a user can complete the incident workflow without cross-tenant access", as
     throw new Error("The API key list after rotation was malformed.");
   const oldKeyAfterRotation = keysAfterRotationPayload.data.find(
     (item): item is Record<string, unknown> =>
-      isObject(item) && item.id === rotationApiKeyId,
+      isObject(item) && item.id === rotationOldKeyId,
   );
   const newKeyAfterRotation = keysAfterRotationPayload.data.find(
     (item): item is Record<string, unknown> =>
@@ -658,6 +659,36 @@ test("a user can complete the incident workflow without cross-tenant access", as
     throw new Error("Rotation did not leave both old and new key records.");
   expect(oldKeyAfterRotation.revokedAt).not.toBeNull();
   expect(newKeyAfterRotation.revokedAt).toBeNull();
+
+  let oldKeyIngestionStatus = 0;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const oldKeyIngestion = await page.request.post(ingestionUrl, {
+      headers: {
+        Authorization: `Bearer ${rotationOldKey}`,
+        "Idempotency-Key": `e2e-old-rotated-${randomUUID()}-${attempt}`,
+      },
+      data: telemetryEvent,
+    });
+    oldKeyIngestionStatus = oldKeyIngestion.status();
+    if (oldKeyIngestionStatus !== 429) break;
+    await page.waitForTimeout(5000);
+  }
+  expect(oldKeyIngestionStatus).toBe(401);
+
+  let newKeyIngestionStatus = 0;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const newKeyIngestion = await page.request.post(ingestionUrl, {
+      headers: {
+        Authorization: `Bearer ${rotatedProjectKey}`,
+        "Idempotency-Key": `e2e-new-rotated-${randomUUID()}-${attempt}`,
+      },
+      data: telemetryEvent,
+    });
+    newKeyIngestionStatus = newKeyIngestion.status();
+    if (newKeyIngestionStatus !== 429) break;
+    await page.waitForTimeout(5000);
+  }
+  expect(newKeyIngestionStatus).toBe(200);
 
   await page.getByRole("button", { name: "Access" }).click();
   await page.getByPlaceholder("person@example.com").fill(invitedEmail);
