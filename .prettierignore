@@ -1,6 +1,7 @@
 node_modules
 .next
 .next-dev
+apps/web/next-env.d.ts
 dist
 .local
 .env

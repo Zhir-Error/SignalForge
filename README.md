@@ -42,22 +42,22 @@ PostgreSQL remains the durable source for pending work whether Redis is enabled 
 
 ## Repository layout
 
-| Path | Purpose |
-| --- | --- |
-| `apps/web` | Next.js landing page and workspace UI |
-| `apps/api` | Fastify HTTP API, authentication integration, and telemetry ingestion |
-| `apps/worker` | Incident correlation, investigations, verification dispatch, and retention |
-| `apps/demo-service` | Instrumented sample checkout service and demo database checks |
-| `apps/verification-runner` | Authenticated runner for fixed verification scenarios |
-| `packages/auth` | Shared authentication helpers |
-| `packages/contracts` | Shared request, response, and event schemas |
-| `packages/db` | Database schema, client, and SQL migrations |
-| `packages/domain` | Shared domain rules and validation |
-| `packages/ai-investigator` | Mock and OpenAI investigation providers |
-| `infra/postgres` | PostgreSQL runtime-role initialization script |
-| `docs` | Deployment, testing, threat model, architecture, and status notes |
-| `tests`, `e2e` | Vitest unit/integration tests and Playwright browser workflow |
-| `scripts` | Migration and end-to-end workflow helper scripts |
+| Path                       | Purpose                                                                    |
+| -------------------------- | -------------------------------------------------------------------------- |
+| `apps/web`                 | Next.js landing page and workspace UI                                      |
+| `apps/api`                 | Fastify HTTP API, authentication integration, and telemetry ingestion      |
+| `apps/worker`              | Incident correlation, investigations, verification dispatch, and retention |
+| `apps/demo-service`        | Instrumented sample checkout service and demo database checks              |
+| `apps/verification-runner` | Authenticated runner for fixed verification scenarios                      |
+| `packages/auth`            | Shared authentication helpers                                              |
+| `packages/contracts`       | Shared request, response, and event schemas                                |
+| `packages/db`              | Database schema, client, and SQL migrations                                |
+| `packages/domain`          | Shared domain rules and validation                                         |
+| `packages/ai-investigator` | Mock and OpenAI investigation providers                                    |
+| `infra/postgres`           | PostgreSQL runtime-role initialization script                              |
+| `docs`                     | Deployment, testing, threat model, architecture, and status notes          |
+| `tests`, `e2e`             | Vitest unit/integration tests and Playwright browser workflow              |
+| `scripts`                  | Migration and end-to-end workflow helper scripts                           |
 
 ## Prerequisites
 
@@ -168,34 +168,34 @@ The current Dockerfile includes workspace source and development dependencies. T
 
 `.env.example` lists the local variables used by the workspace. Keep service URLs and credentials consistent with the selected setup.
 
-| Variable | Purpose |
-| --- | --- |
-| `NODE_ENV` | Runtime mode; local development uses `development`. |
-| `APP_BASE_URL` | Browser-facing web origin used by the API/auth configuration. |
-| `API_BASE_URL` | API origin used by web and demo-service requests. |
-| `DATABASE_URL` | PostgreSQL URL for API and worker runtime access; use the restricted `signalforge_app` role. |
-| `MIGRATION_DATABASE_URL` | PostgreSQL owner URL used by Drizzle migrations. |
-| `DEMO_DATABASE_URL` | URL for the sample checkout's separate PostgreSQL database. |
-| `REDIS_URL` | Optional Redis connection. If unset, the worker uses PostgreSQL outbox polling. |
-| `AUTH_SECRET` | Secret used for authentication/session signing; use a random value of at least 32 characters. |
-| `VERIFICATION_RUNNER_SECRET` | Shared secret for worker-to-runner and runner-to-demo-service requests; use a separate random value of at least 32 characters. |
-| `AI_PROVIDER` | `mock` (default, deterministic) or `openai`. |
-| `AI_API_KEY` | Provider key required when `AI_PROVIDER=openai`. Keep it server-side. |
-| `AI_MODEL` | OpenAI model identifier required when `AI_PROVIDER=openai`. |
-| `AI_REQUEST_TIMEOUT_MS` | Worker timeout for an AI provider request; defaults to 30 seconds. |
-| `LOG_LEVEL` | Log verbosity (`fatal`, `error`, `warn`, `info`, `debug`, `trace`, or `silent` for the API). |
-| `TRUSTED_PROXY_IPS` | Comma-separated trusted proxy IPs when running behind a proxy; leave blank for direct local access. |
-| `TELEMETRY_RETENTION_DAYS` | Global telemetry and completed investigation evidence retention period; defaults to 14 days. |
-| `MAX_EVENT_PAYLOAD_BYTES` | Maximum accepted telemetry event payload size; defaults to 32 KiB. |
-| `MAX_BATCH_EVENTS` | Maximum events in one ingestion batch; defaults to 100. |
-| `INGEST_RATE_LIMIT_PER_MINUTE` | Per-client-IP telemetry ingestion limit; defaults to 600 requests per minute. |
-| `INVESTIGATION_RATE_LIMIT_PER_HOUR` | Per-client-IP investigation request limit; defaults to 20 per hour. |
-| `VERIFICATION_TIMEOUT_MS` | Verification execution timeout; defaults to 60 seconds. |
-| `VERIFICATION_MAX_OUTPUT_BYTES` | Maximum verification result size; defaults to 64 KiB. |
-| `VERIFICATION_RUNNER_URL` | Worker URL for the verification runner; local default is `http://127.0.0.1:4200`. |
-| `DEMO_SERVICE_URL` | Runner URL for the sample checkout; local default is `http://127.0.0.1:4100`. |
-| `DEMO_API_KEY` | Optional project key that lets the sample checkout submit failure telemetry to the API. |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Optional OTLP traces export endpoint for the instrumented sample service. |
+| Variable                             | Purpose                                                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `NODE_ENV`                           | Runtime mode; local development uses `development`.                                                                            |
+| `APP_BASE_URL`                       | Browser-facing web origin used by the API/auth configuration.                                                                  |
+| `API_BASE_URL`                       | API origin used by web and demo-service requests.                                                                              |
+| `DATABASE_URL`                       | PostgreSQL URL for API and worker runtime access; use the restricted `signalforge_app` role.                                   |
+| `MIGRATION_DATABASE_URL`             | PostgreSQL owner URL used by Drizzle migrations.                                                                               |
+| `DEMO_DATABASE_URL`                  | URL for the sample checkout's separate PostgreSQL database.                                                                    |
+| `REDIS_URL`                          | Optional Redis connection. If unset, the worker uses PostgreSQL outbox polling.                                                |
+| `AUTH_SECRET`                        | Secret used for authentication/session signing; use a random value of at least 32 characters.                                  |
+| `VERIFICATION_RUNNER_SECRET`         | Shared secret for worker-to-runner and runner-to-demo-service requests; use a separate random value of at least 32 characters. |
+| `AI_PROVIDER`                        | `mock` (default, deterministic) or `openai`.                                                                                   |
+| `AI_API_KEY`                         | Provider key required when `AI_PROVIDER=openai`. Keep it server-side.                                                          |
+| `AI_MODEL`                           | OpenAI model identifier required when `AI_PROVIDER=openai`.                                                                    |
+| `AI_REQUEST_TIMEOUT_MS`              | Worker timeout for an AI provider request; defaults to 30 seconds.                                                             |
+| `LOG_LEVEL`                          | Log verbosity (`fatal`, `error`, `warn`, `info`, `debug`, `trace`, or `silent` for the API).                                   |
+| `TRUSTED_PROXY_IPS`                  | Comma-separated trusted proxy IPs when running behind a proxy; leave blank for direct local access.                            |
+| `TELEMETRY_RETENTION_DAYS`           | Global telemetry and completed investigation evidence retention period; defaults to 14 days.                                   |
+| `MAX_EVENT_PAYLOAD_BYTES`            | Maximum accepted telemetry event payload size; defaults to 32 KiB.                                                             |
+| `MAX_BATCH_EVENTS`                   | Maximum events in one ingestion batch; defaults to 100.                                                                        |
+| `INGEST_RATE_LIMIT_PER_MINUTE`       | Per-client-IP telemetry ingestion limit; defaults to 600 requests per minute.                                                  |
+| `INVESTIGATION_RATE_LIMIT_PER_HOUR`  | Per-client-IP investigation request limit; defaults to 20 per hour.                                                            |
+| `VERIFICATION_TIMEOUT_MS`            | Verification execution timeout; defaults to 60 seconds.                                                                        |
+| `VERIFICATION_MAX_OUTPUT_BYTES`      | Maximum verification result size; defaults to 64 KiB.                                                                          |
+| `VERIFICATION_RUNNER_URL`            | Worker URL for the verification runner; local default is `http://127.0.0.1:4200`.                                              |
+| `DEMO_SERVICE_URL`                   | Runner URL for the sample checkout; local default is `http://127.0.0.1:4100`.                                                  |
+| `DEMO_API_KEY`                       | Optional project key that lets the sample checkout submit failure telemetry to the API.                                        |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Optional OTLP traces export endpoint for the instrumented sample service.                                                      |
 
 Compose also accepts optional host-port overrides: `POSTGRES_HOST_PORT` (default `5432`), `DEMO_POSTGRES_HOST_PORT` (default `5433`), and `REDIS_HOST_PORT` (default `6379`). Use these when the default ports are already occupied.
 
@@ -225,27 +225,27 @@ The migration verification command needs the owner role's `CREATEDB` permission 
 
 Run commands from the repository root.
 
-| Command | Description |
-| --- | --- |
-| `pnpm dev` | Start web, API, worker, demo service, and verification runner. |
-| `pnpm dev:web` | Start only the Next.js web app. |
-| `pnpm dev:api` | Start only the Fastify API. |
-| `pnpm dev:worker` | Start only the background worker. |
-| `pnpm dev:demo` | Start only the sample checkout service. |
-| `pnpm dev:runner` | Start only the verification runner. |
-| `pnpm build` | Build all workspace packages and applications. |
-| `pnpm typecheck` | Type-check all workspace packages and applications. |
-| `pnpm lint` | Run ESLint across the repository. |
-| `pnpm format:check` | Check formatting with Prettier. |
-| `pnpm format` | Format repository files with Prettier. |
-| `pnpm test` | Run Vitest unit and configured integration tests. |
-| `pnpm test:integration` | Run the tenant-isolation PostgreSQL integration test. |
-| `pnpm test:watch` | Run Vitest in watch mode. |
-| `pnpm e2e` | Run the Playwright Chromium workflow; Playwright starts the app processes. |
-| `pnpm smoke:workflow` | Run the end-to-end workflow script against already-running local services. |
-| `pnpm db:generate` | Generate a Drizzle migration from schema changes. |
-| `pnpm db:migrate` | Apply pending migrations using the migration database URL. |
-| `pnpm db:verify-migrations` | Apply migrations to a temporary database and verify runtime-role access. |
+| Command                     | Description                                                                |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `pnpm dev`                  | Start web, API, worker, demo service, and verification runner.             |
+| `pnpm dev:web`              | Start only the Next.js web app.                                            |
+| `pnpm dev:api`              | Start only the Fastify API.                                                |
+| `pnpm dev:worker`           | Start only the background worker.                                          |
+| `pnpm dev:demo`             | Start only the sample checkout service.                                    |
+| `pnpm dev:runner`           | Start only the verification runner.                                        |
+| `pnpm build`                | Build all workspace packages and applications.                             |
+| `pnpm typecheck`            | Type-check all workspace packages and applications.                        |
+| `pnpm lint`                 | Run ESLint across the repository.                                          |
+| `pnpm format:check`         | Check formatting with Prettier.                                            |
+| `pnpm format`               | Format repository files with Prettier.                                     |
+| `pnpm test`                 | Run Vitest unit and configured integration tests.                          |
+| `pnpm test:integration`     | Run the tenant-isolation PostgreSQL integration test.                      |
+| `pnpm test:watch`           | Run Vitest in watch mode.                                                  |
+| `pnpm e2e`                  | Run the Playwright Chromium workflow; Playwright starts the app processes. |
+| `pnpm smoke:workflow`       | Run the end-to-end workflow script against already-running local services. |
+| `pnpm db:generate`          | Generate a Drizzle migration from schema changes.                          |
+| `pnpm db:migrate`           | Apply pending migrations using the migration database URL.                 |
+| `pnpm db:verify-migrations` | Apply migrations to a temporary database and verify runtime-role access.   |
 
 ## Tests and verification
 
