@@ -1,0 +1,222 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: signalforge_owner
+      POSTGRES_PASSWORD: signalforge_owner_dev
+      POSTGRES_DB: signalforge
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - signalforge-postgres:/var/lib/postgresql
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U signalforge_owner -d signalforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  demo-postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: signalforge_demo
+      POSTGRES_PASSWORD: signalforge_demo_dev
+      POSTGRES_DB: signalforge_demo
+    ports:
+      - "${DEMO_POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - signalforge-demo-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U signalforge_demo -d signalforge_demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - signalforge-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  migrate:
+    profiles: [tools]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_PACKAGE: "@signalforge/api"
+    command: ["pnpm", "db:migrate"]
+    environment:
+      MIGRATION_DATABASE_URL: postgresql://signalforge_owner:signalforge_owner_dev@postgres:5432/signalforge
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_PACKAGE: "@signalforge/api"
+    environment:
+      NODE_ENV: development
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+      API_BASE_URL: http://api:4000
+      DATABASE_URL: postgresql://signalforge_app:signalforge_app_dev@postgres:5432/signalforge
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AI_PROVIDER: ${AI_PROVIDER:-mock}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      TELEMETRY_RETENTION_DAYS: ${TELEMETRY_RETENTION_DAYS:-14}
+      MAX_EVENT_PAYLOAD_BYTES: ${MAX_EVENT_PAYLOAD_BYTES:-32768}
+      MAX_BATCH_EVENTS: ${MAX_BATCH_EVENTS:-100}
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_PACKAGE: "@signalforge/worker"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://signalforge_app:signalforge_app_dev@postgres:5432/signalforge
+      REDIS_URL: redis://redis:6379
+      AI_PROVIDER: ${AI_PROVIDER:-mock}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-30000}
+      VERIFICATION_RUNNER_URL: http://verification-runner:4200
+      VERIFICATION_RUNNER_SECRET: ${VERIFICATION_RUNNER_SECRET:?Set VERIFICATION_RUNNER_SECRET in .env}
+      VERIFICATION_TIMEOUT_MS: ${VERIFICATION_TIMEOUT_MS:-60000}
+      VERIFICATION_MAX_OUTPUT_BYTES: ${VERIFICATION_MAX_OUTPUT_BYTES:-65536}
+      TELEMETRY_RETENTION_DAYS: ${TELEMETRY_RETENTION_DAYS:-14}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - verification
+  demo-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_PACKAGE: "@signalforge/demo-service"
+    environment:
+      NODE_ENV: development
+      DEMO_SERVICE_PORT: 4100
+      DEMO_DATABASE_URL: postgresql://signalforge_demo:signalforge_demo_dev@demo-postgres:5432/signalforge_demo
+      DEMO_API_KEY: ${DEMO_API_KEY:-}
+      API_BASE_URL: http://api:4000
+      VERIFICATION_RUNNER_SECRET: ${VERIFICATION_RUNNER_SECRET:?Set VERIFICATION_RUNNER_SECRET in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "4100:4100"
+    depends_on:
+      api:
+        condition: service_started
+      demo-postgres:
+        condition: service_healthy
+    networks:
+      - default
+      - verification
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4100/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  verification-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_PACKAGE: "@signalforge/verification-runner"
+    command: ["node", "apps/verification-runner/dist/index.js"]
+    environment:
+      NODE_ENV: development
+      VERIFICATION_RUNNER_HOST: 0.0.0.0
+      VERIFICATION_RUNNER_PORT: 4200
+      VERIFICATION_RUNNER_SECRET: ${VERIFICATION_RUNNER_SECRET:?Set VERIFICATION_RUNNER_SECRET in .env}
+      VERIFICATION_TIMEOUT_MS: ${VERIFICATION_TIMEOUT_MS:-60000}
+      DEMO_SERVICE_URL: http://demo-service:4100
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    networks:
+      - verification
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4200/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      demo-service:
+        condition: service_healthy
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_PACKAGE: "@signalforge/web"
+        API_BASE_URL: http://api:4000
+    environment:
+      NODE_ENV: production
+      API_BASE_URL: http://api:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  signalforge-postgres:
+  signalforge-demo-postgres:
+  signalforge-redis:
+networks:
+  verification:
+    internal: true

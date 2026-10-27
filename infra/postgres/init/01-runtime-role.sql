@@ -1,0 +1,11 @@
+-- This runs only when Docker initializes a new, empty PostgreSQL volume.
+CREATE ROLE signalforge_app LOGIN PASSWORD 'signalforge_app_dev'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+GRANT CONNECT ON DATABASE signalforge TO signalforge_app;
+GRANT USAGE ON SCHEMA public TO signalforge_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO signalforge_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO signalforge_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO signalforge_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO signalforge_app;

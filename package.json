@@ -1,0 +1,50 @@
+{
+  "name": "signalforge",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @signalforge/api --filter @signalforge/web --filter @signalforge/worker --filter @signalforge/demo-service --filter @signalforge/verification-runner dev",
+    "dev:api": "pnpm --filter @signalforge/api dev",
+    "dev:web": "pnpm --filter @signalforge/web dev",
+    "dev:worker": "pnpm --filter @signalforge/worker dev",
+    "dev:demo": "pnpm --filter @signalforge/demo-service dev",
+    "dev:runner": "pnpm --filter @signalforge/verification-runner dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "vitest run tests/tenant-isolation.integration.test.ts",
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "smoke:workflow": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-workflow.ps1",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:verify-migrations": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-migrations.ps1",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "@next/eslint-plugin-next": "^16.4.3",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "@typescript-eslint/eslint-plugin": "^8.72.0",
+    "@typescript-eslint/parser": "^8.72.0",
+    "cross-env": "^10.1.0",
+    "drizzle-kit": "^0.31.11",
+    "drizzle-orm": "^0.45.4",
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12",
+    "yaml": "^2.9.1"
+  }
+}

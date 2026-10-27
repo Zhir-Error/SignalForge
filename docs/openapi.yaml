@@ -1,0 +1,929 @@
+openapi: 3.1.0
+info:
+  title: SignalForge API
+  version: 0.1.0
+  description: >-
+    API contract for the implemented SignalForge MVP. JSON endpoints use the
+    `{ data, requestId }` success envelope and `{ error: { code, message,
+    requestId } }` error envelope. The `/api/auth` routes are provided by Better
+    Auth. Organization membership is always checked server-side; project
+    resources also require `X-Organization-Id` unless the operation documents a
+    query parameter instead. This contract is parsed in the automated test suite.
+servers:
+  - url: http://localhost:4000
+    description: Local API
+tags:
+  - name: Health
+  - name: Authentication
+  - name: Organizations
+  - name: Projects
+  - name: Telemetry
+  - name: Incidents
+  - name: Investigations
+  - name: Verification
+  - name: Audit
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      operationId: getHealth
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness check including PostgreSQL
+      operationId: getReadiness
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/auth/sign-in/email:
+    post:
+      tags: [Authentication]
+      summary: Sign in with email and password
+      operationId: signInWithEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignInInput" }
+      responses:
+        "200": { description: Better Auth response and session cookie. }
+        default: { description: Better Auth error response }
+  /api/auth/sign-up/email:
+    post:
+      tags: [Authentication]
+      summary: Create an account with email and password
+      operationId: signUpWithEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignUpInput" }
+      responses:
+        "200": { description: Better Auth response and session cookie. }
+        default: { description: Better Auth error response }
+  /api/auth/get-session:
+    get:
+      tags: [Authentication]
+      summary: Read the current Better Auth session
+      operationId: getAuthSession
+      responses:
+        "200": { description: Better Auth session response. }
+  /api/auth/sign-out:
+    post:
+      tags: [Authentication]
+      summary: Sign out and clear the session cookie
+      operationId: signOut
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200": { description: Better Auth response and cleared session cookie. }
+        default: { description: Better Auth error response }
+  /v1/me:
+    get:
+      tags: [Authentication]
+      summary: Get the current user
+      operationId: getCurrentUser
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/me/organizations:
+    get:
+      tags: [Organizations]
+      summary: List organizations for the current user
+      operationId: listMyOrganizations
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/organizations:
+    post:
+      tags: [Organizations]
+      summary: Create an organization and make the current user its owner
+      operationId: createOrganization
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrganizationInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/organizations/{organizationId}/members:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+    get:
+      tags: [Organizations]
+      summary: List organization members
+      operationId: listOrganizationMembers
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/organizations/{organizationId}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Organizations]
+      summary: Change an organization member's role
+      operationId: updateOrganizationMember
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MembershipUpdate" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [Organizations]
+      summary: Remove a member, subject to last-owner protection
+      operationId: removeOrganizationMember
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/organizations/{organizationId}/invitations:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+    get:
+      tags: [Organizations]
+      summary: List organization invitations
+      operationId: listInvitations
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [Organizations]
+      summary: Create an invitation and return a one-time invitation token
+      operationId: createInvitation
+      description: Email delivery is manual; the API returns a token for link creation.
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvitationInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/organizations/{organizationId}/invitations/{invitationId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+      - name: invitationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [Organizations]
+      summary: Revoke an invitation
+      operationId: revokeInvitation
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/invitations/accept:
+    post:
+      tags: [Organizations]
+      summary: Accept an invitation for the signed-in user's matching email
+      operationId: acceptInvitation
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 256 }
+              additionalProperties: false
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/onboarding:
+    post:
+      tags: [Organizations]
+      summary: Create the initial organization, project, resources, and project key
+      operationId: createWorkspaceOnboarding
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "400": { $ref: "#/components/responses/Error" }
+  /v1/projects:
+    get:
+      tags: [Projects]
+      summary: List projects the user can access
+      operationId: listProjects
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [Projects]
+      summary: Create a project with a staging environment and registered checks
+      operationId: createProject
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/OrganizationHeader"
+    get:
+      tags: [Projects]
+      summary: Get project details
+      operationId: getProject
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [Projects]
+      summary: Update project name or description
+      operationId: updateProject
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectUpdate" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}/environments:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/OrganizationHeader"
+    get:
+      tags: [Projects]
+      summary: List project environments
+      operationId: listEnvironments
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    post:
+      tags: [Projects]
+      summary: Register a project environment
+      operationId: createEnvironment
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnvironmentInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}/services:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/OrganizationHeader"
+    get:
+      tags: [Projects]
+      summary: List project services
+      operationId: listServices
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    post:
+      tags: [Projects]
+      summary: Register a project service
+      operationId: createService
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ServiceInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}/stream:
+    get:
+      tags: [Projects, Incidents]
+      summary: Subscribe to project incident snapshots over server-sent events
+      operationId: streamProjectIncidents
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - name: organizationId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Periodic project incident snapshot events.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}/api-keys:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/OrganizationHeader"
+    get:
+      tags: [Projects]
+      summary: List project API keys without returning their secrets
+      operationId: listProjectApiKeys
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    post:
+      tags: [Projects]
+      summary: Create a project-scoped telemetry key (secret returned once)
+      operationId: createProjectApiKey
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiKeyInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/api-keys/{keyId}:
+    parameters:
+      - name: keyId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/OrganizationHeader"
+    delete:
+      tags: [Projects]
+      summary: Revoke a project API key
+      operationId: revokeProjectApiKey
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/ingest/events:
+    post:
+      tags: [Telemetry]
+      summary: Ingest one event or an event batch
+      operationId: ingestEvents
+      description: Requires a project key with events:write scope and an Idempotency-Key. Payload, batch, attribute, timestamp, and per-client-IP rate limits are enforced by the API.
+      security: [{ projectApiKey: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/TelemetryEvent"
+                - type: object
+                  required: [events]
+                  properties:
+                    events:
+                      type: array
+                      minItems: 1
+                      maxItems: 100
+                      items: { $ref: "#/components/schemas/TelemetryEvent" }
+                  additionalProperties: false
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}/deployments:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/OrganizationHeader"
+    get:
+      tags: [Projects]
+      summary: List project deployments
+      operationId: listDeployments
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    post:
+      tags: [Projects]
+      summary: Record a project deployment
+      operationId: createDeployment
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeploymentInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}/demo/failure:
+    post:
+      tags: [Telemetry]
+      summary: Emit the registered synthetic checkout failure
+      operationId: triggerDemoFailure
+      description: Creates explicitly synthetic telemetry for the sample workflow.
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}/incidents:
+    get:
+      tags: [Incidents]
+      summary: List project incidents
+      operationId: listProjectIncidents
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/incidents/{incidentId}:
+    parameters:
+      - $ref: "#/components/parameters/IncidentId"
+      - $ref: "#/components/parameters/OrganizationHeader"
+    get:
+      tags: [Incidents]
+      summary: Get incident details and correlated events
+      operationId: getIncident
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/incidents/{incidentId}/events:
+    get:
+      tags: [Incidents]
+      summary: List events correlated with an incident
+      operationId: listIncidentEvents
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IncidentId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /v1/incidents/{incidentId}/status:
+    patch:
+      tags: [Incidents]
+      summary: Change incident lifecycle status
+      operationId: updateIncidentStatus
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IncidentId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  {
+                    type: string,
+                    enum: [open, investigating, monitoring, resolved, ignored],
+                  }
+              additionalProperties: false
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/incidents/{incidentId}/investigations:
+    parameters:
+      - $ref: "#/components/parameters/IncidentId"
+      - $ref: "#/components/parameters/OrganizationHeader"
+    get:
+      tags: [Investigations]
+      summary: List investigations for an incident
+      operationId: listIncidentInvestigations
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    post:
+      tags: [Investigations]
+      summary: Queue an evidence-backed investigation
+      operationId: createIncidentInvestigation
+      description: Subject to a per-client-IP limit configured by INVESTIGATION_RATE_LIMIT_PER_HOUR.
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  {
+                    type: string,
+                    enum: [evidence_based],
+                    default: evidence_based,
+                  }
+              additionalProperties: false
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/investigations/{investigationId}:
+    get:
+      tags: [Investigations]
+      summary: Get investigation status and summary
+      operationId: getInvestigation
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/InvestigationId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/investigations/{investigationId}/evidence:
+    get:
+      tags: [Investigations]
+      summary: List persisted investigation evidence
+      operationId: listInvestigationEvidence
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/InvestigationId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /v1/investigations/{investigationId}/hypotheses:
+    get:
+      tags: [Investigations]
+      summary: List validated hypotheses and evidence links
+      operationId: listInvestigationHypotheses
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/InvestigationId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /v1/incidents/{incidentId}/verification-runs:
+    parameters:
+      - $ref: "#/components/parameters/IncidentId"
+      - $ref: "#/components/parameters/OrganizationHeader"
+    get:
+      tags: [Verification]
+      summary: List verification runs for an incident
+      operationId: listIncidentVerificationRuns
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    post:
+      tags: [Verification]
+      summary: Queue a registered verification scenario
+      operationId: createVerificationRun
+      description: Only `known-failure` and `recovery-check` are accepted; caller input is never executed as a command.
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerificationInput" }
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/verification-runs/{runId}:
+    get:
+      tags: [Verification]
+      summary: Get verification execution status and assertion results
+      operationId: getVerificationRun
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/projects/{projectId}/test-scenarios:
+    get:
+      tags: [Verification]
+      summary: List registered project verification scenarios
+      operationId: listTestScenarios
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /v1/audit:
+    get:
+      tags: [Audit]
+      summary: List recent organization audit records
+      operationId: listAuditRecords
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "403": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: better-auth.session_token
+      description: Better Auth HTTP-only session cookie in development.
+    secureSessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Secure-better-auth.session_token
+      description: Secure-prefixed Better Auth session cookie in production over HTTPS.
+    projectApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: SignalForge project API key
+  parameters:
+    OrganizationId:
+      name: organizationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IncidentId:
+      name: incidentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    InvestigationId:
+      name: investigationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    OrganizationHeader:
+      name: X-Organization-Id
+      in: header
+      required: true
+      description: Organization context; membership is revalidated by the API.
+      schema: { type: string, format: uuid }
+  responses:
+    Ok:
+      description: Request completed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SuccessEnvelope" }
+    Created:
+      description: Resource created.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SuccessEnvelope" }
+    Accepted:
+      description: Asynchronous operation accepted or queued.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SuccessEnvelope" }
+    Error:
+      description: Request failed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  schemas:
+    SignInInput:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 12, maxLength: 128 }
+      additionalProperties: false
+    SignUpInput:
+      type: object
+      required: [name, email, password]
+      properties:
+        name: { type: string, minLength: 1 }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 12, maxLength: 128 }
+      additionalProperties: false
+    SuccessEnvelope:
+      type: object
+      required: [data, requestId]
+      properties:
+        data: {}
+        requestId: { type: string }
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+    OrganizationInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+      additionalProperties: false
+    OnboardingInput:
+      type: object
+      required: [organizationName, projectName, projectSlug]
+      properties:
+        organizationName: { type: string, minLength: 1, maxLength: 100 }
+        projectName: { type: string, minLength: 1, maxLength: 100 }
+        projectSlug:
+          {
+            type: string,
+            minLength: 2,
+            maxLength: 80,
+            pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          }
+      additionalProperties: false
+    ProjectInput:
+      type: object
+      required: [name, slug]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        slug:
+          {
+            type: string,
+            minLength: 2,
+            maxLength: 80,
+            pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          }
+        description: { type: string, maxLength: 500 }
+      additionalProperties: false
+    ProjectUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: [string, "null"], maxLength: 500 }
+      additionalProperties: false
+    InvitationInput:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+        role: { type: string, enum: [admin, member, viewer] }
+      additionalProperties: false
+    MembershipUpdate:
+      type: object
+      required: [role]
+      properties:
+        role: { type: string, enum: [owner, admin, member, viewer] }
+      additionalProperties: false
+    EnvironmentInput:
+      type: object
+      required: [name, slug]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        slug:
+          {
+            type: string,
+            minLength: 2,
+            maxLength: 80,
+            pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          }
+      additionalProperties: false
+    ServiceInput:
+      type: object
+      required: [name, serviceKey]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        serviceKey:
+          {
+            type: string,
+            minLength: 2,
+            maxLength: 100,
+            pattern: "^[a-zA-Z0-9._-]+$",
+          }
+        description: { type: string, maxLength: 500 }
+      additionalProperties: false
+    ApiKeyInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        expiresAt: { type: string, format: date-time }
+      additionalProperties: false
+    DeploymentInput:
+      type: object
+      required: [environmentId, version, status, deployedAt]
+      properties:
+        environmentId: { type: string, format: uuid }
+        version: { type: string, minLength: 1, maxLength: 120 }
+        commitSha: { type: string, maxLength: 100 }
+        status:
+          {
+            type: string,
+            enum: [started, succeeded, failed, rolled_back, unknown],
+          }
+        deployedAt: { type: string, format: date-time }
+        metadata:
+          {
+            type: object,
+            additionalProperties:
+              {
+                oneOf:
+                  [
+                    { type: string, maxLength: 1024 },
+                    { type: number },
+                    { type: boolean },
+                    { type: "null" },
+                  ],
+              },
+          }
+      additionalProperties: false
+    TelemetryEvent:
+      type: object
+      required: [eventType, occurredAt, message]
+      properties:
+        eventType: { type: string, enum: [log, error, trace, metric, custom] }
+        occurredAt: { type: string, format: date-time }
+        service: { type: string, maxLength: 100 }
+        environment: { type: string, maxLength: 100 }
+        severity:
+          {
+            type: string,
+            enum: [debug, info, warning, error, critical, unknown],
+            default: info,
+          }
+        traceId: { type: string, minLength: 8, maxLength: 64 }
+        spanId: { type: string, minLength: 8, maxLength: 32 }
+        message: { type: string, minLength: 1, maxLength: 4096 }
+        attributes:
+          {
+            type: object,
+            maxProperties: 50,
+            additionalProperties:
+              {
+                oneOf:
+                  [
+                    { type: string, maxLength: 1024 },
+                    { type: number },
+                    { type: boolean },
+                    { type: "null" },
+                  ],
+              },
+          }
+      additionalProperties: false
+    VerificationInput:
+      type: object
+      required: [scenarioKey]
+      properties:
+        scenarioKey: { type: string, enum: [known-failure, recovery-check] }
+        commitSha: { type: string, maxLength: 100 }
+      additionalProperties: false

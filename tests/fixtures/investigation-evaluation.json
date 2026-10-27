@@ -1,0 +1,98 @@
+[
+  {
+    "id": "checkout-database-unavailable-v1",
+    "description": "Synthetic checkout errors after a deployment and cannot connect to its isolated database.",
+    "evidence": [
+      {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "type": "telemetry_event",
+        "occurredAt": "2026-01-01T12:00:01.000Z",
+        "content": "checkout-api error: database connection refused",
+        "attributes": { "environment": "staging", "service": "checkout-api" }
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "type": "deployment",
+        "occurredAt": "2026-01-01T11:58:00.000Z",
+        "content": "Synthetic version demo-v2 deployed to staging",
+        "attributes": { "version": "demo-v2", "status": "succeeded" }
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "type": "telemetry_event",
+        "occurredAt": "2026-01-01T12:00:02.000Z",
+        "content": "checkout-api database health check failed",
+        "attributes": { "environment": "staging", "service": "checkout-api" }
+      }
+    ],
+    "allowedEvidenceIds": [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000003"
+    ],
+    "plausibleHypotheses": [
+      "The sample service cannot reach its configured database."
+    ],
+    "contradictionsAndDistractors": [
+      "Deployment proximity alone does not establish causation."
+    ],
+    "verificationScenario": "recovery-check",
+    "expectedLimitations": [
+      "The result describes only the synthetic staging checkout.",
+      "A passing SELECT 1 check does not establish production recovery."
+    ]
+  },
+  {
+    "id": "deployment-timing-distractor-v1",
+    "description": "A synthetic error occurs near a deployment while a database health check is healthy and another service warns.",
+    "evidence": [
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "type": "telemetry_event",
+        "occurredAt": "2026-01-01T12:00:01.000Z",
+        "content": "billing-api error: request validation failed",
+        "attributes": { "environment": "staging", "service": "billing-api" }
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "type": "deployment",
+        "occurredAt": "2026-01-01T11:59:00.000Z",
+        "content": "Synthetic version billing-v7 deployed to staging",
+        "attributes": { "version": "billing-v7", "status": "succeeded" }
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "type": "telemetry_event",
+        "occurredAt": "2026-01-01T12:00:02.000Z",
+        "content": "checkout-api database health check passed",
+        "attributes": { "environment": "staging", "service": "checkout-api" }
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000014",
+        "type": "telemetry_event",
+        "occurredAt": "2026-01-01T12:00:03.000Z",
+        "content": "catalog-api warning: cache refresh delayed",
+        "attributes": { "environment": "staging", "service": "catalog-api" }
+      }
+    ],
+    "allowedEvidenceIds": [
+      "00000000-0000-4000-8000-000000000011",
+      "00000000-0000-4000-8000-000000000012",
+      "00000000-0000-4000-8000-000000000013",
+      "00000000-0000-4000-8000-000000000014"
+    ],
+    "plausibleHypotheses": [
+      "The request validation behavior may have changed."
+    ],
+    "contradictionsAndDistractors": [
+      "The healthy checkout check is unrelated evidence.",
+      "The catalog cache warning belongs to a different service.",
+      "The nearby billing deployment is correlated in time, not proven causal."
+    ],
+    "verificationScenario": "known-failure",
+    "expectedLimitations": [
+      "The fixture does not establish which code change caused the billing error.",
+      "The registered verification scenario validates only the sample checkout."
+    ]
+  }
+]

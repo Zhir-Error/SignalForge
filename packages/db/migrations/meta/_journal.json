@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1793026666322,
+      "tag": "0000_colorful_triathlon",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793027898988,
+      "tag": "0001_absent_eddie_brock",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793028473716,
+      "tag": "0002_superb_king_cobra",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793052264702,
+      "tag": "0003_broken_justice",
+      "breakpoints": true
+    }
+  ]
+}

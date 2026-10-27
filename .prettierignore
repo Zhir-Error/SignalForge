@@ -1,0 +1,9 @@
+node_modules
+.next
+.next-dev
+dist
+.local
+.env
+pnpm-lock.yaml
+SignalForge_Complete_Product_and_Engineering_Plan.md
+packages/db/migrations/**/*.sql

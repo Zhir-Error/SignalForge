@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: signalforge_owner
+          POSTGRES_PASSWORD: signalforge_owner_dev
+          POSTGRES_DB: signalforge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signalforge_owner -d signalforge"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+      demo-postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: signalforge_demo
+          POSTGRES_PASSWORD: signalforge_demo_dev
+          POSTGRES_DB: signalforge_demo
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U signalforge_demo -d signalforge_demo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      NODE_ENV: development
+      APP_BASE_URL: http://localhost:3000
+      API_BASE_URL: http://localhost:4000
+      DATABASE_URL: postgresql://signalforge_app:signalforge_app_dev@127.0.0.1:5432/signalforge
+      MIGRATION_DATABASE_URL: postgresql://signalforge_owner:signalforge_owner_dev@127.0.0.1:5432/signalforge
+      DEMO_DATABASE_URL: postgresql://signalforge_demo:signalforge_demo_dev@127.0.0.1:5433/signalforge_demo
+      AUTH_SECRET: ci-only-secret-with-at-least-thirty-two-characters
+      AI_PROVIDER: mock
+      VERIFICATION_RUNNER_URL: http://127.0.0.1:4200
+      VERIFICATION_RUNNER_SECRET: ci-runner-secret-with-at-least-thirty-two-bytes
+      DEMO_SERVICE_URL: http://127.0.0.1:4100
+      PLAYWRIGHT_BASE_URL: http://localhost:3000
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.20.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        run: pnpm audit --prod
+      - name: Create the restricted runtime database role
+        run: psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/postgres/init/01-runtime-role.sql
+      - run: pnpm db:migrate
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm e2e
