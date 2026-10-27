@@ -1,9 +1,8 @@
-import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
-import type { NextConfig } from "next";
+import { PHASE_DEVELOPMENT_SERVER } from "next/constants.js";
 
 const apiOrigin = process.env.API_BASE_URL ?? "http://127.0.0.1:4000";
 
-const nextConfig = (phase: string): NextConfig => ({
+const nextConfig = (phase) => ({
   distDir: phase === PHASE_DEVELOPMENT_SERVER ? ".next-dev" : ".next",
   async rewrites() {
     return [

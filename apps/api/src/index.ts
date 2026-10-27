@@ -2,13 +2,26 @@ import { randomUUID } from "node:crypto";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
+import { Redis } from "ioredis";
 import { createAuth } from "@signalforge/auth";
 import { createDatabase } from "@signalforge/db";
 import { ApiError } from "./security.js";
 import { config } from "./config.js";
 import { registerRoutes } from "./routes.js";
+import {
+  InMemoryCounterStore,
+  IngestionRateLimiter,
+  RedisCounterStore,
+} from "./ingestion-rate-limit.js";
 
 const database = createDatabase(config.DATABASE_URL);
+const rateLimitRedis = config.REDIS_URL
+  ? new Redis(config.REDIS_URL, {
+      connectTimeout: 2_000,
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+    })
+  : undefined;
 const auth = createAuth(database.pool, {
   secret: config.AUTH_SECRET,
   apiBaseUrl: config.API_BASE_URL,
@@ -37,6 +50,12 @@ const app = Fastify({
         .filter(Boolean)
     : false,
 });
+rateLimitRedis?.on("error", () => {
+  app.log.warn(
+    { code: "RATE_LIMIT_STORE_UNAVAILABLE" },
+    "Redis ingestion rate-limit storage is unavailable",
+  );
+});
 
 await app.register(cors, {
   origin: config.APP_BASE_URL,
@@ -53,6 +72,13 @@ await app.register(rateLimit, {
   max: 600,
   timeWindow: 60_000,
   keyGenerator: (request) => request.ip,
+  ...(rateLimitRedis
+    ? {
+        redis: rateLimitRedis,
+        nameSpace: "signalforge:request-rate-limit:",
+      }
+    : {}),
+  skipOnError: false,
   errorResponseBuilder: (_request, context) =>
     new ApiError(
       429,
@@ -70,11 +96,23 @@ app.addHook("onRequest", async (_request, reply) => {
   );
 });
 
-await registerRoutes(app, { database, auth });
+const ingestionRateLimiter = new IngestionRateLimiter(
+  rateLimitRedis
+    ? new RedisCounterStore(rateLimitRedis)
+    : new InMemoryCounterStore(),
+);
+await registerRoutes(app, { database, auth, ingestionRateLimiter });
 
 const close = async () => {
   await app.close();
   await database.close();
+  if (rateLimitRedis) {
+    try {
+      await rateLimitRedis.quit();
+    } catch {
+      rateLimitRedis.disconnect();
+    }
+  }
 };
 process.once("SIGINT", () => {
   void close().then(() => process.exit(0));

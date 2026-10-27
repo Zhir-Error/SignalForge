@@ -36,6 +36,7 @@ import {
   reconcileStaleOutbox,
 } from "./outbox-recovery.js";
 import { authorizeOutboxDispatch } from "./outbox-dispatch.js";
+import { markInvestigationRunning } from "./investigation-state.js";
 
 const environment = z
   .object({
@@ -183,19 +184,26 @@ async function prepareInvestigation(
             status: "failed",
             errorCode: "INCIDENT_NOT_FOUND",
             finishedAt: new Date(),
+            updatedAt: new Date(),
           })
-          .where(eq(investigations.id, job.investigationId));
+          .where(
+            and(
+              eq(investigations.id, job.investigationId),
+              eq(investigations.organizationId, job.organizationId),
+              inArray(investigations.status, ["queued", "running"]),
+            ),
+          );
         return null;
       }
-      await tx
-        .update(investigations)
-        .set({
-          status: "running",
-          startedAt: investigation.startedAt ?? new Date(),
-          errorCode: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(investigations.id, job.investigationId));
+      const markedRunning = await markInvestigationRunning(
+        tx,
+        {
+          organizationId: job.organizationId,
+          investigationId: job.investigationId,
+        },
+        investigation.startedAt ?? new Date(),
+      );
+      if (!markedRunning) return null;
 
       const from = new Date(incident.firstSeenAt.getTime() - 30 * 60 * 1000);
       const to = new Date(incident.lastSeenAt.getTime() + 10 * 60 * 1000);

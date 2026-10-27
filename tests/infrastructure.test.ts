@@ -23,7 +23,7 @@ describe("local demo infrastructure", () => {
           networks: ["default", "verification"],
         },
         "verification-runner": {
-          command: ["node", "apps/verification-runner/dist/index.js"],
+          command: ["node", "dist/index.js"],
           environment: {
             DEMO_SERVICE_URL: "http://demo-service:4100",
             VERIFICATION_RUNNER_SECRET: expect.any(String),

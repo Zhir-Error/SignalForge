@@ -2,6 +2,9 @@
   "name": "@signalforge/worker",
   "version": "0.1.0",
   "private": true,
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "scripts": {
     "dev": "cross-env NODE_OPTIONS=--conditions=development tsx watch src/index.ts",

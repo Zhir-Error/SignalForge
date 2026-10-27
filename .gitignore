@@ -2,6 +2,7 @@ node_modules/
 .next/
 .next-dev/
 dist/
+*.tsbuildinfo
 coverage/
 .env
 .env.local

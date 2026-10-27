@@ -45,6 +45,12 @@ const configSchema = z.object({
     .min(1)
     .max(100_000)
     .default(600),
+  INGEST_RATE_LIMIT_PER_ORGANIZATION_PER_MINUTE: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(1_000_000)
+    .default(6_000),
   INVESTIGATION_RATE_LIMIT_PER_HOUR: z.coerce
     .number()
     .int()

@@ -9,7 +9,7 @@ test("a user can complete the incident workflow without cross-tenant access", as
   page,
   browser,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(150_000);
   const email = `signalforge-e2e-${randomUUID()}@example.test`;
   const invitedEmail = `signalforge-viewer-${randomUUID()}@example.test`;
   const slug = `e2e-${randomUUID().slice(0, 8)}`;
@@ -189,6 +189,100 @@ test("a user can complete the incident workflow without cross-tenant access", as
     data: { ...telemetryEvent, message: "Different payload" },
   });
   expect(conflictingReplay.status()).toBe(409);
+
+  const equalTimestamp = new Date().toISOString();
+  const equalTimestampMessage = `Equal timestamp cursor fixture ${randomUUID()}`;
+  const equalTimestampIngestion = await page.request.post(ingestionUrl, {
+    headers: {
+      Authorization: `Bearer ${projectKey}`,
+      "Idempotency-Key": `e2e-equal-timestamp-${randomUUID()}`,
+    },
+    data: {
+      events: Array.from({ length: 3 }, () => ({
+        ...telemetryEvent,
+        occurredAt: equalTimestamp,
+        message: equalTimestampMessage,
+      })),
+    },
+  });
+  expect(equalTimestampIngestion.status()).toBe(200);
+  const equalTimestampIngestionPayload: unknown =
+    await equalTimestampIngestion.json();
+  if (
+    !isObject(equalTimestampIngestionPayload) ||
+    !isObject(equalTimestampIngestionPayload.data) ||
+    equalTimestampIngestionPayload.data.accepted !== 3 ||
+    !Array.isArray(equalTimestampIngestionPayload.data.eventIds) ||
+    equalTimestampIngestionPayload.data.eventIds.length !== 3 ||
+    !equalTimestampIngestionPayload.data.eventIds.every(
+      (eventId) => typeof eventId === "string",
+    )
+  )
+    throw new Error("The equal-timestamp events were not accepted.");
+  const expectedEqualTimestampEventIds = equalTimestampIngestionPayload.data
+    .eventIds as string[];
+
+  let equalTimestampIncidentId: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(
+          `http://localhost:4000/v1/projects/${ownerProjectId}/incidents?limit=50`,
+          { headers: { "x-organization-id": createdOrganizationId } },
+        );
+        if (response.status() !== 200) return false;
+        const payload: unknown = await response.json();
+        if (!isObject(payload) || !Array.isArray(payload.data)) return false;
+        const incident = payload.data.find(
+          (candidate) =>
+            isObject(candidate) &&
+            candidate.title === equalTimestampMessage &&
+            candidate.eventCount === 3,
+        );
+        if (!isObject(incident) || typeof incident.id !== "string")
+          return false;
+        equalTimestampIncidentId = incident.id;
+        return true;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+  if (!equalTimestampIncidentId)
+    throw new Error("The equal-timestamp incident was not correlated.");
+
+  const equalTimestampEventIds: string[] = [];
+  let equalTimestampCursor: string | null = null;
+  for (let pageNumber = 0; pageNumber < 3; pageNumber += 1) {
+    const query = equalTimestampCursor
+      ? `?limit=1&cursor=${encodeURIComponent(equalTimestampCursor)}`
+      : "?limit=1";
+    const response = await page.request.get(
+      `http://localhost:4000/v1/incidents/${equalTimestampIncidentId}/events${query}`,
+      { headers: { "x-organization-id": createdOrganizationId } },
+    );
+    expect(response.status()).toBe(200);
+    const payload: unknown = await response.json();
+    if (
+      !isObject(payload) ||
+      !Array.isArray(payload.data) ||
+      !isObject(payload.data[0]) ||
+      typeof payload.data[0].eventId !== "string" ||
+      payload.data[0].occurredAt !== equalTimestamp ||
+      !isObject(payload.page)
+    )
+      throw new Error("An equal-timestamp event page was malformed.");
+    equalTimestampEventIds.push(payload.data[0].eventId);
+    equalTimestampCursor =
+      typeof payload.page.nextCursor === "string"
+        ? payload.page.nextCursor
+        : null;
+    expect(payload.page.hasMore).toBe(pageNumber < 2);
+  }
+  expect(new Set(equalTimestampEventIds).size).toBe(3);
+  expect(equalTimestampEventIds.sort()).toEqual(
+    [...expectedEqualTimestampEventIds].sort(),
+  );
+
   const revokeButtons = page.getByRole("button", { name: "Revoke key" });
   await expect(revokeButtons).toHaveCount(2);
   await revokeButtons.first().click();
@@ -269,7 +363,126 @@ test("a user can complete the incident workflow without cross-tenant access", as
   )
     throw new Error("The correlated incident was not returned to its owner.");
   const ownerIncidentId = ownerIncidentsPayload.data[0].id;
+
+  const firstIncidentPageResponse = await page.request.get(
+    `http://localhost:4000/v1/projects/${ownerProjectId}/incidents?limit=1`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(firstIncidentPageResponse.status()).toBe(200);
+  const firstIncidentPage: unknown = await firstIncidentPageResponse.json();
+  if (
+    !isObject(firstIncidentPage) ||
+    !Array.isArray(firstIncidentPage.data) ||
+    !isObject(firstIncidentPage.data[0]) ||
+    typeof firstIncidentPage.data[0].id !== "string" ||
+    !isObject(firstIncidentPage.page) ||
+    firstIncidentPage.page.hasMore !== true ||
+    typeof firstIncidentPage.page.nextCursor !== "string"
+  )
+    throw new Error("The incident feed did not return its next cursor.");
+  const secondIncidentPageResponse = await page.request.get(
+    `http://localhost:4000/v1/projects/${ownerProjectId}/incidents?limit=1&cursor=${encodeURIComponent(firstIncidentPage.page.nextCursor)}`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(secondIncidentPageResponse.status()).toBe(200);
+  const secondIncidentPage: unknown = await secondIncidentPageResponse.json();
+  if (
+    !isObject(secondIncidentPage) ||
+    !Array.isArray(secondIncidentPage.data) ||
+    !isObject(secondIncidentPage.data[0]) ||
+    typeof secondIncidentPage.data[0].id !== "string"
+  )
+    throw new Error("The incident feed did not return the next page.");
+  expect(secondIncidentPage.data[0].id).not.toBe(firstIncidentPage.data[0].id);
+  const mismatchedIncidentCursor = await page.request.get(
+    `http://localhost:4000/v1/projects/${ownerProjectId}/incidents?limit=1&status=resolved&cursor=${encodeURIComponent(firstIncidentPage.page.nextCursor)}`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(mismatchedIncidentCursor.status()).toBe(400);
+
+  const repeatedSyntheticFailure = await page.request.post(
+    `http://localhost:4000/v1/projects/${ownerProjectId}/demo/failure`,
+    { headers: { "x-organization-id": createdOrganizationId }, data: {} },
+  );
+  expect(repeatedSyntheticFailure.status()).toBe(202);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const additionalSyntheticFailure = await page.request.post(
+      `http://localhost:4000/v1/projects/${ownerProjectId}/demo/failure`,
+      { headers: { "x-organization-id": createdOrganizationId }, data: {} },
+    );
+    expect(additionalSyntheticFailure.status()).toBe(202);
+  }
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(
+          `http://localhost:4000/v1/incidents/${ownerIncidentId}/events?limit=30`,
+          { headers: { "x-organization-id": createdOrganizationId } },
+        );
+        if (response.status() !== 200) return false;
+        const payload: unknown = await response.json();
+        return isObject(payload) && isObject(payload.page)
+          ? payload.page.hasMore
+          : false;
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  const firstIncidentEventsResponse = await page.request.get(
+    `http://localhost:4000/v1/incidents/${ownerIncidentId}/events?limit=1`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  const firstIncidentEvents: unknown = await firstIncidentEventsResponse.json();
+  if (
+    !isObject(firstIncidentEvents) ||
+    !Array.isArray(firstIncidentEvents.data) ||
+    !isObject(firstIncidentEvents.data[0]) ||
+    typeof firstIncidentEvents.data[0].linkId !== "string" ||
+    !isObject(firstIncidentEvents.page) ||
+    typeof firstIncidentEvents.page.nextCursor !== "string"
+  )
+    throw new Error("The incident event feed did not return its next cursor.");
+  const secondIncidentEventsResponse = await page.request.get(
+    `http://localhost:4000/v1/incidents/${ownerIncidentId}/events?limit=1&cursor=${encodeURIComponent(firstIncidentEvents.page.nextCursor)}`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(secondIncidentEventsResponse.status()).toBe(200);
+  const secondIncidentEvents: unknown =
+    await secondIncidentEventsResponse.json();
+  if (
+    !isObject(secondIncidentEvents) ||
+    !Array.isArray(secondIncidentEvents.data) ||
+    !isObject(secondIncidentEvents.data[0]) ||
+    typeof secondIncidentEvents.data[0].linkId !== "string"
+  )
+    throw new Error("The incident event feed did not return the next page.");
+  expect(secondIncidentEvents.data[0].linkId).not.toBe(
+    firstIncidentEvents.data[0].linkId,
+  );
+
+  const incidentTimelineRequest = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response
+        .url()
+        .includes(`/v1/incidents/${ownerIncidentId}/events?limit=30`),
+  );
   await incident.click();
+  expect((await incidentTimelineRequest).status()).toBe(200);
+  const loadMoreEvents = page.getByRole("button", {
+    name: "Load more events",
+  });
+  await expect(loadMoreEvents).toBeVisible();
+  const nextTimelinePage = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response
+        .url()
+        .includes(`/v1/incidents/${ownerIncidentId}/events?limit=30&cursor=`),
+  );
+  await loadMoreEvents.click();
+  expect((await nextTimelinePage).status()).toBe(200);
+  await expect(loadMoreEvents).toHaveCount(0);
   const investigationStart = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -303,6 +516,35 @@ test("a user can complete the incident workflow without cross-tenant access", as
     timeout: 20_000,
   });
   await expect(page.getByText(/Evidence references:.*supports/)).toBeVisible();
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(
+        `http://localhost:4000/v1/investigations/${ownerInvestigationId}`,
+        { headers: { "x-organization-id": createdOrganizationId } },
+      );
+      if (response.status() !== 200) return "unavailable";
+      const payload: unknown = await response.json();
+      return isObject(payload) && isObject(payload.data)
+        ? payload.data.status
+        : "unavailable";
+    })
+    .toBe("completed", { timeout: 20_000 });
+  const completedInvestigationCancellation = await page.request.post(
+    `http://localhost:4000/v1/investigations/${ownerInvestigationId}/cancel`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(completedInvestigationCancellation.status()).toBe(409);
+  expect(await completedInvestigationCancellation.json()).toMatchObject({
+    error: { code: "INVESTIGATION_NOT_CANCELLABLE" },
+  });
+  const completedInvestigationRetry = await page.request.post(
+    `http://localhost:4000/v1/investigations/${ownerInvestigationId}/retry`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(completedInvestigationRetry.status()).toBe(409);
+  expect(await completedInvestigationRetry.json()).toMatchObject({
+    error: { code: "INVESTIGATION_NOT_RETRYABLE" },
+  });
 
   const verificationStart = page.waitForResponse(
     (response) =>
@@ -419,11 +661,124 @@ test("a user can complete the incident workflow without cross-tenant access", as
     { headers: { "x-organization-id": viewerOrganizationId }, data: {} },
   );
   expect(viewerWriteAttempt.status()).toBe(403);
+  const viewerCancellationAttempt = await invitePage.request.post(
+    `http://localhost:4000/v1/investigations/${ownerInvestigationId}/cancel`,
+    { headers: { "x-organization-id": viewerOrganizationId } },
+  );
+  expect(viewerCancellationAttempt.status()).toBe(403);
+  expect(await viewerCancellationAttempt.json()).toMatchObject({
+    error: { code: "FORBIDDEN" },
+  });
+  const viewerRetryAttempt = await invitePage.request.post(
+    `http://localhost:4000/v1/investigations/${ownerInvestigationId}/retry`,
+    { headers: { "x-organization-id": viewerOrganizationId }, timeout: 10_000 },
+  );
+  expect(viewerRetryAttempt.status()).toBe(429);
+  expect(await viewerRetryAttempt.json()).toMatchObject({
+    error: { code: "RATE_LIMITED" },
+  });
+
+  const currentMembersResponse = await page.request.get(
+    `http://localhost:4000/v1/organizations/${createdOrganizationId}/members`,
+    { timeout: 10_000 },
+  );
+  expect(currentMembersResponse.status()).toBe(200);
+  const currentMembersPayload: unknown = await currentMembersResponse.json();
+  if (
+    !isObject(currentMembersPayload) ||
+    !Array.isArray(currentMembersPayload.data)
+  )
+    throw new Error("The organization member response was malformed.");
+  const viewerMembership = currentMembersPayload.data.find(
+    (candidate) => isObject(candidate) && candidate.email === invitedEmail,
+  );
+  if (
+    !isObject(viewerMembership) ||
+    typeof viewerMembership.userId !== "string"
+  )
+    throw new Error("The invited viewer was missing from the member list.");
+
+  await invitePage.evaluate(
+    ({ organizationId, projectId }) => {
+      const stream = new EventSource(
+        `/v1/projects/${projectId}/stream?organizationId=${encodeURIComponent(organizationId)}`,
+      );
+      const state = { messages: 0, failed: false, stream };
+      stream.onmessage = () => {
+        state.messages += 1;
+      };
+      stream.onerror = () => {
+        state.failed = true;
+        stream.close();
+      };
+      (
+        window as Window & {
+          signalForgeMembershipStream?: typeof state;
+        }
+      ).signalForgeMembershipStream = state;
+    },
+    { organizationId: viewerOrganizationId, projectId: firstProject.id },
+  );
+  await expect
+    .poll(
+      () =>
+        invitePage.evaluate(
+          () =>
+            (
+              window as Window & {
+                signalForgeMembershipStream?: { messages: number };
+              }
+            ).signalForgeMembershipStream?.messages ?? 0,
+        ),
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThan(0);
+  const removeViewer = await page.request.delete(
+    `http://localhost:4000/v1/organizations/${createdOrganizationId}/members/${viewerMembership.userId}`,
+  );
+  expect(removeViewer.status()).toBe(200);
+  await expect
+    .poll(
+      () =>
+        invitePage.evaluate(
+          () =>
+            (
+              window as Window & {
+                signalForgeMembershipStream?: { failed: boolean };
+              }
+            ).signalForgeMembershipStream?.failed ?? false,
+        ),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
+  const revokedViewerRequest = await invitePage.request.get(
+    `http://localhost:4000/v1/projects?organizationId=${viewerOrganizationId}`,
+  );
+  expect(revokedViewerRequest.status()).toBe(404);
   await invitePage.context().close();
 
   const isolatedTenantContext = await browser.newContext();
   const isolatedTenantPage = await isolatedTenantContext.newPage();
   const isolatedTenantEmail = `signalforge-isolated-${randomUUID()}@example.test`;
+  const revokedInvitationResponse = await page.request.post(
+    `http://localhost:4000/v1/organizations/${createdOrganizationId}/invitations`,
+    {
+      headers: { "x-organization-id": createdOrganizationId },
+      data: { email: isolatedTenantEmail, role: "viewer" },
+    },
+  );
+  expect(revokedInvitationResponse.status()).toBe(201);
+  const revokedInvitationPayload: unknown =
+    await revokedInvitationResponse.json();
+  if (
+    !isObject(revokedInvitationPayload) ||
+    !isObject(revokedInvitationPayload.data) ||
+    typeof revokedInvitationPayload.data.id !== "string" ||
+    typeof revokedInvitationPayload.data.token !== "string"
+  )
+    throw new Error("The invitation revocation fixture was malformed.");
+  const revokedInvitationId = revokedInvitationPayload.data.id;
+  const revokedInvitationToken = revokedInvitationPayload.data.token;
   const isolatedSignup = await isolatedTenantPage.request.post(
     "http://localhost:4000/api/auth/sign-up/email",
     {
@@ -436,6 +791,19 @@ test("a user can complete the incident workflow without cross-tenant access", as
     },
   );
   expect(isolatedSignup.status(), await isolatedSignup.text()).toBe(200);
+  const invitationRevocation = await page.request.delete(
+    `http://localhost:4000/v1/organizations/${createdOrganizationId}/invitations/${revokedInvitationId}`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(invitationRevocation.status()).toBe(200);
+  const revokedInvitationAcceptance = await isolatedTenantPage.request.post(
+    "http://localhost:4000/v1/invitations/accept",
+    { data: { token: revokedInvitationToken } },
+  );
+  expect(revokedInvitationAcceptance.status()).toBe(404);
+  expect(await revokedInvitationAcceptance.json()).toMatchObject({
+    error: { code: "INVITATION_NOT_FOUND" },
+  });
   const isolatedActorResponse = await isolatedTenantPage.request.get(
     "http://localhost:4000/v1/me",
   );
@@ -559,6 +927,10 @@ test("a user can complete the incident workflow without cross-tenant access", as
   );
   expect(crossTenantKeyRevoke.status()).toBe(404);
   const crossTenantWrites = [
+    await isolatedTenantPage.request.post(
+      `http://localhost:4000/v1/investigations/${ownerInvestigationId}/cancel`,
+      { headers: secondTenantHeaders },
+    ),
     await isolatedTenantPage.request.patch(
       `http://localhost:4000/v1/projects/${ownerProjectId}`,
       {

@@ -1,11 +1,13 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   apiKeyInputSchema,
+  cursorPageSchema,
   deploymentInputSchema,
   environmentInputSchema,
+  incidentSeveritySchema,
   incidentStatusInputSchema,
   incidentStatusSchema,
   invitationAcceptSchema,
@@ -59,11 +61,27 @@ import {
 import { createProjectKey, authenticateProjectKey } from "./key-auth.js";
 import { config } from "./config.js";
 import { ingestTelemetry } from "./ingestion.js";
+import {
+  cancelQueuedInvestigation,
+  retryFailedInvestigation,
+} from "./investigations.js";
+import type { IngestionRateLimiter } from "./ingestion-rate-limit.js";
+import {
+  decodeCursor,
+  encodeCursor,
+  incidentCursorSchema,
+  incidentEventCursorSchema,
+  InvalidCursorError,
+} from "./pagination.js";
 import type { SignalForgeAuth } from "@signalforge/auth";
 
 const uuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-type Dependencies = { database: DatabaseHandle; auth: SignalForgeAuth };
+type Dependencies = {
+  database: DatabaseHandle;
+  auth: SignalForgeAuth;
+  ingestionRateLimiter: IngestionRateLimiter;
+};
 type ProjectParams = { projectId: string };
 type IncidentParams = { incidentId: string };
 type InvestigationParams = { investigationId: string };
@@ -1655,6 +1673,28 @@ export async function registerRoutes(
     },
     async (request) => {
       const key = await authenticateProjectKey(request, database);
+      let rateLimit;
+      try {
+        rateLimit = await dependencies.ingestionRateLimiter.consume({
+          organizationId: key.organizationId,
+          apiKeyId: key.id,
+          perKeyLimit: config.INGEST_RATE_LIMIT_PER_MINUTE,
+          perOrganizationLimit:
+            config.INGEST_RATE_LIMIT_PER_ORGANIZATION_PER_MINUTE,
+        });
+      } catch {
+        throw new ApiError(
+          503,
+          "RATE_LIMIT_UNAVAILABLE",
+          "The ingestion rate-limit service is temporarily unavailable.",
+        );
+      }
+      if (!rateLimit.allowed)
+        throw new ApiError(
+          429,
+          "RATE_LIMITED",
+          `Ingestion limit reached. Retry in ${Math.ceil(rateLimit.retryAfterMs / 1000)} seconds.`,
+        );
       const header = request.headers["idempotency-key"];
       const result = await ingestTelemetry(
         database,
@@ -1897,7 +1937,7 @@ export async function registerRoutes(
   app.get<{
     Params: ProjectParams;
     Querystring: {
-      before?: string;
+      cursor?: string;
       status?: string;
       severity?: string;
       limit?: string;
@@ -1908,33 +1948,73 @@ export async function registerRoutes(
       dependencies,
       request.params.projectId,
     );
-    const limit = Math.min(
-      Math.max(Number(request.query.limit ?? 50) || 50, 1),
-      100,
-    );
+    const page = parseBody(cursorPageSchema, {
+      limit: request.query.limit ?? 50,
+      ...(request.query.cursor === undefined
+        ? {}
+        : { cursor: request.query.cursor }),
+    });
+    const statusResult =
+      request.query.status === undefined
+        ? undefined
+        : incidentStatusSchema.safeParse(request.query.status);
+    if (statusResult && !statusResult.success)
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "The status filter is invalid.",
+      );
+    const status = statusResult?.success ? statusResult.data : null;
+    const severityResult =
+      request.query.severity === undefined
+        ? undefined
+        : incidentSeveritySchema.safeParse(request.query.severity);
+    if (severityResult && !severityResult.success)
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "The severity filter is invalid.",
+      );
+    const severity = severityResult?.success ? severityResult.data : null;
+    const cursorContext = {
+      organizationId: project.organizationId,
+      projectId: project.id,
+      status,
+      severity,
+    };
+    let cursor: ReturnType<typeof incidentCursorSchema.parse> | undefined;
+    if (page.cursor) {
+      try {
+        cursor = decodeCursor(
+          page.cursor,
+          config.AUTH_SECRET,
+          incidentCursorSchema,
+          cursorContext,
+        );
+      } catch (error) {
+        if (!(error instanceof InvalidCursorError)) throw error;
+        throw new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          "The incident cursor is invalid for these filters.",
+        );
+      }
+    }
     const conditions = [
       eq(incidents.organizationId, project.organizationId),
       eq(incidents.projectId, project.id),
     ];
-    if (
-      request.query.status &&
-      incidentStatusSchema.safeParse(request.query.status).success
-    )
-      conditions.push(eq(incidents.status, request.query.status));
-    if (
-      request.query.severity &&
-      ["info", "warning", "error", "critical"].includes(request.query.severity)
-    )
-      conditions.push(eq(incidents.severity, request.query.severity));
-    if (request.query.before) {
-      const before = new Date(request.query.before);
-      if (Number.isNaN(before.getTime()))
-        throw new ApiError(
-          400,
-          "VALIDATION_ERROR",
-          "The incident cursor is invalid.",
-        );
-      conditions.push(lt(incidents.lastSeenAt, before));
+    if (status) conditions.push(eq(incidents.status, status));
+    if (severity) conditions.push(eq(incidents.severity, severity));
+    if (cursor) {
+      const cursorCondition = or(
+        lt(incidents.lastSeenAt, new Date(cursor.lastSeenAt)),
+        and(
+          eq(incidents.lastSeenAt, new Date(cursor.lastSeenAt)),
+          lt(incidents.id, cursor.id),
+        ),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
     }
     const rows = await database.withTenant(
       member.actor.userId,
@@ -1945,17 +2025,28 @@ export async function registerRoutes(
           .from(incidents)
           .where(and(...conditions))
           .orderBy(desc(incidents.lastSeenAt), desc(incidents.id))
-          .limit(limit + 1),
+          .limit(page.limit + 1),
     );
-    const hasMore = rows.length > limit;
-    const data = rows.slice(0, limit);
+    const hasMore = rows.length > page.limit;
+    const data = rows.slice(0, page.limit);
+    const last = data.at(-1);
     return {
       data,
       page: {
         hasMore,
-        nextCursor: hasMore
-          ? (data.at(-1)?.lastSeenAt.toISOString() ?? null)
-          : null,
+        nextCursor:
+          hasMore && last
+            ? encodeCursor(
+                {
+                  version: 1,
+                  kind: "incident",
+                  ...cursorContext,
+                  lastSeenAt: last.lastSeenAt.toISOString(),
+                  id: last.id,
+                },
+                config.AUTH_SECRET,
+              )
+            : null,
       },
       requestId: request.id,
     };
@@ -2061,56 +2152,105 @@ export async function registerRoutes(
     },
   );
 
-  app.get<{ Params: IncidentParams }>(
-    "/v1/incidents/:incidentId/events",
-    async (request) => {
-      const incidentId = requireUuid(request.params.incidentId);
-      const organizationId = organizationHeader(request);
-      const member = await requireMember(
-        request,
-        auth,
-        database,
-        organizationId,
-      );
-      const rows = await database.withTenant(
-        member.actor.userId,
-        organizationId,
-        async (tx) =>
-          tx
-            .select({
-              linkId: incidentEvents.id,
-              eventId: telemetryEvents.id,
-              eventType: telemetryEvents.eventType,
-              severity: telemetryEvents.severity,
-              occurredAt: telemetryEvents.occurredAt,
-              message: telemetryEvents.message,
-              traceId: telemetryEvents.traceId,
-              attributes: telemetryEvents.attributes,
-              linkType: incidentEvents.eventType,
-            })
-            .from(incidentEvents)
-            .innerJoin(
-              telemetryEvents,
-              and(
-                eq(telemetryEvents.id, incidentEvents.telemetryEventId),
-                eq(
-                  telemetryEvents.organizationId,
-                  incidentEvents.organizationId,
-                ),
-              ),
-            )
-            .where(
-              and(
-                eq(incidentEvents.organizationId, organizationId),
-                eq(incidentEvents.incidentId, incidentId),
-              ),
-            )
-            .orderBy(asc(telemetryEvents.occurredAt))
-            .limit(100),
-      );
-      return success(request, rows);
-    },
-  );
+  app.get<{
+    Params: IncidentParams;
+    Querystring: { cursor?: string; limit?: string };
+  }>("/v1/incidents/:incidentId/events", async (request) => {
+    const incidentId = requireUuid(request.params.incidentId);
+    const organizationId = organizationHeader(request);
+    const member = await requireMember(request, auth, database, organizationId);
+    const page = parseBody(cursorPageSchema, {
+      limit: request.query.limit ?? 50,
+      ...(request.query.cursor === undefined
+        ? {}
+        : { cursor: request.query.cursor }),
+    });
+    const cursorContext = { organizationId, incidentId };
+    let cursor: ReturnType<typeof incidentEventCursorSchema.parse> | undefined;
+    if (page.cursor) {
+      try {
+        cursor = decodeCursor(
+          page.cursor,
+          config.AUTH_SECRET,
+          incidentEventCursorSchema,
+          cursorContext,
+        );
+      } catch (error) {
+        if (!(error instanceof InvalidCursorError)) throw error;
+        throw new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          "The event cursor is invalid for this incident.",
+        );
+      }
+    }
+    const rows = await database.withTenant(
+      member.actor.userId,
+      organizationId,
+      async (tx) => {
+        const conditions = [
+          eq(incidentEvents.organizationId, organizationId),
+          eq(incidentEvents.incidentId, incidentId),
+        ];
+        if (cursor) {
+          const cursorCondition = or(
+            gt(telemetryEvents.occurredAt, new Date(cursor.occurredAt)),
+            and(
+              eq(telemetryEvents.occurredAt, new Date(cursor.occurredAt)),
+              gt(incidentEvents.id, cursor.id),
+            ),
+          );
+          if (cursorCondition) conditions.push(cursorCondition);
+        }
+        return tx
+          .select({
+            linkId: incidentEvents.id,
+            eventId: telemetryEvents.id,
+            eventType: telemetryEvents.eventType,
+            severity: telemetryEvents.severity,
+            occurredAt: telemetryEvents.occurredAt,
+            message: telemetryEvents.message,
+            traceId: telemetryEvents.traceId,
+            attributes: telemetryEvents.attributes,
+            linkType: incidentEvents.eventType,
+          })
+          .from(incidentEvents)
+          .innerJoin(
+            telemetryEvents,
+            and(
+              eq(telemetryEvents.id, incidentEvents.telemetryEventId),
+              eq(telemetryEvents.organizationId, incidentEvents.organizationId),
+            ),
+          )
+          .where(and(...conditions))
+          .orderBy(asc(telemetryEvents.occurredAt), asc(incidentEvents.id))
+          .limit(page.limit + 1);
+      },
+    );
+    const hasMore = rows.length > page.limit;
+    const data = rows.slice(0, page.limit);
+    const last = data.at(-1);
+    return {
+      data,
+      page: {
+        hasMore,
+        nextCursor:
+          hasMore && last
+            ? encodeCursor(
+                {
+                  version: 1,
+                  kind: "incident-event",
+                  ...cursorContext,
+                  occurredAt: last.occurredAt.toISOString(),
+                  id: last.linkId,
+                },
+                config.AUTH_SECRET,
+              )
+            : null,
+      },
+      requestId: request.id,
+    };
+  });
 
   app.patch<{ Params: IncidentParams }>(
     "/v1/incidents/:incidentId/status",
@@ -2359,6 +2499,95 @@ export async function registerRoutes(
           "The requested resource was not found.",
         );
       return success(request, row);
+    },
+  );
+
+  app.post<{ Params: InvestigationParams }>(
+    "/v1/investigations/:investigationId/cancel",
+    async (request) => {
+      const investigationId = requireUuid(request.params.investigationId);
+      const organizationId = organizationHeader(request);
+      const member = await requireMember(
+        request,
+        auth,
+        database,
+        organizationId,
+      );
+      requireRole(member, "member");
+      const result = await cancelQueuedInvestigation(database, {
+        organizationId,
+        investigationId,
+        actorUserId: member.actor.userId,
+        requestId: request.id,
+      });
+      if (result.kind === "missing")
+        throw new ApiError(
+          404,
+          "RESOURCE_NOT_FOUND",
+          "The requested resource was not found.",
+        );
+      if (result.kind === "not_cancellable")
+        throw new ApiError(
+          409,
+          "INVESTIGATION_NOT_CANCELLABLE",
+          "Only a queued investigation can be cancelled.",
+        );
+      return success(request, result.investigation);
+    },
+  );
+
+  app.post<{ Params: InvestigationParams }>(
+    "/v1/investigations/:investigationId/retry",
+    {
+      config: {
+        rateLimit: {
+          max: config.INVESTIGATION_RATE_LIMIT_PER_HOUR,
+          timeWindow: 60 * 60_000,
+          keyGenerator: (request) => request.ip,
+        },
+      },
+    },
+    async (request, reply) => {
+      const investigationId = requireUuid(request.params.investigationId);
+      const organizationId = organizationHeader(request);
+      const member = await requireMember(
+        request,
+        auth,
+        database,
+        organizationId,
+      );
+      requireRole(member, "member");
+      const result = await retryFailedInvestigation(database, {
+        organizationId,
+        investigationId,
+        actorUserId: member.actor.userId,
+        requestId: request.id,
+      });
+      if (result.kind === "missing")
+        throw new ApiError(
+          404,
+          "RESOURCE_NOT_FOUND",
+          "The requested resource was not found.",
+        );
+      if (result.kind === "retry_limit")
+        throw new ApiError(
+          409,
+          "INVESTIGATION_RETRY_LIMIT",
+          "The manual retry limit for this investigation has been reached.",
+        );
+      if (result.kind === "not_retryable")
+        throw new ApiError(
+          409,
+          "INVESTIGATION_NOT_RETRYABLE",
+          "This investigation cannot be retried in its current state.",
+        );
+      return reply.code(202).send({
+        data: {
+          ...result.investigation,
+          statusUrl: `/v1/investigations/${result.investigation.id}`,
+        },
+        requestId: request.id,
+      });
     },
   );
 

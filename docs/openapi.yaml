@@ -275,6 +275,7 @@ paths:
       security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
       responses:
         "200": { $ref: "#/components/responses/Ok" }
+        "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
     patch:
       tags: [Projects]
@@ -402,7 +403,7 @@ paths:
       tags: [Telemetry]
       summary: Ingest one event or an event batch
       operationId: ingestEvents
-      description: Requires a project key with events:write scope and an Idempotency-Key. Payload, batch, attribute, timestamp, and per-client-IP rate limits are enforced by the API.
+      description: Requires a project key with events:write scope and an Idempotency-Key. Payload, batch, attribute, and timestamp bounds are enforced. Configurable fixed-window limits apply per client IP, API key, and organization; API-key and organization counters use shared Redis storage when REDIS_URL is configured, with a process-local fallback for single-instance development.
       security: [{ projectApiKey: [] }]
       parameters:
         - name: Idempotency-Key
@@ -482,8 +483,22 @@ paths:
           in: query
           required: false
           schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          description: Signed cursor bound to the organization, project, and filters.
+          schema: { type: string, maxLength: 2048 }
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/IncidentStatus" }
+        - name: severity
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/IncidentSeverity" }
       responses:
         "200": { $ref: "#/components/responses/Ok" }
+        "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
   /v1/incidents/{incidentId}:
     parameters:
@@ -506,8 +521,18 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IncidentId"
         - $ref: "#/components/parameters/OrganizationHeader"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          description: Signed cursor bound to the organization and incident.
+          schema: { type: string, maxLength: 2048 }
       responses:
         "200": { $ref: "#/components/responses/Ok" }
+        "400": { $ref: "#/components/responses/Error" }
   /v1/incidents/{incidentId}/status:
     patch:
       tags: [Incidents]
@@ -593,6 +618,37 @@ paths:
         - $ref: "#/components/parameters/OrganizationHeader"
       responses:
         "200": { $ref: "#/components/responses/Ok" }
+  /v1/investigations/{investigationId}/cancel:
+    post:
+      tags: [Investigations]
+      summary: Cancel a queued investigation
+      operationId: cancelQueuedInvestigation
+      description: Requires organization member privileges. Running and terminal investigations cannot be cancelled.
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/InvestigationId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/investigations/{investigationId}/retry:
+    post:
+      tags: [Investigations]
+      summary: Retry an eligible failed investigation
+      operationId: retryFailedInvestigation
+      description: Requires organization member privileges. Only retryable failure codes are accepted, with at most three manual retries per investigation; requests are rate limited by client IP.
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/InvestigationId"
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/investigations/{investigationId}/hypotheses:
     get:
       tags: [Investigations]
@@ -759,7 +815,19 @@ components:
       required: [data, requestId]
       properties:
         data: {}
+        page:
+          type: object
+          required: [hasMore, nextCursor]
+          properties:
+            hasMore: { type: boolean }
+            nextCursor: { type: [string, "null"], maxLength: 2048 }
         requestId: { type: string }
+    IncidentStatus:
+      type: string
+      enum: [open, investigating, monitoring, resolved, ignored]
+    IncidentSeverity:
+      type: string
+      enum: [info, warning, error, critical]
     ErrorEnvelope:
       type: object
       required: [error]

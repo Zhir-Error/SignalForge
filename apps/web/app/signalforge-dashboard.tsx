@@ -23,6 +23,7 @@ type Incident = {
   fingerprint: string;
 };
 type EventRow = {
+  linkId: string;
   eventId: string;
   eventType: string;
   severity: string;
@@ -42,6 +43,10 @@ type IncidentDetail = {
   events: EventRow[];
   relatedDeployments: Deployment[];
 };
+type IncidentEventPage = {
+  data: EventRow[];
+  page: { hasMore: boolean; nextCursor: string | null };
+};
 type Investigation = {
   id: string;
   status: string;
@@ -52,6 +57,11 @@ type Investigation = {
   createdAt: string;
   finishedAt: string | null;
 };
+const retryableInvestigationErrors = new Set([
+  "JOB_RETRIES_EXHAUSTED",
+  "PROVIDER_TIMEOUT",
+  "PROVIDER_UNAVAILABLE",
+]);
 type Evidence = {
   id: string;
   sourceType: string;
@@ -140,6 +150,7 @@ async function apiRequest<T>(
   path: string,
   options: RequestInit = {},
   organizationId?: string,
+  unwrapData = true,
 ): Promise<T> {
   const headers = new Headers(options.headers);
   if (options.body !== undefined && !headers.has("content-type"))
@@ -166,7 +177,7 @@ async function apiRequest<T>(
         : `Request failed (${response.status}).`;
     throw new Error(message);
   }
-  if (isObject(body) && "data" in body) return body.data as T;
+  if (unwrapData && isObject(body) && "data" in body) return body.data as T;
   return body as T;
 }
 
@@ -213,6 +224,12 @@ export default function Dashboard() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [incidentId, setIncidentId] = useState("");
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
+  const [incidentEvents, setIncidentEvents] = useState<EventRow[]>([]);
+  const [incidentEventsCursor, setIncidentEventsCursor] = useState<
+    string | null
+  >(null);
+  const [incidentEventsHasMore, setIncidentEventsHasMore] = useState(false);
+  const [incidentEventsLoading, setIncidentEventsLoading] = useState(false);
   const [activeInvestigation, setActiveInvestigation] =
     useState<Investigation | null>(null);
   const [evidence, setEvidence] = useState<Evidence[]>([]);
@@ -426,6 +443,76 @@ export default function Dashboard() {
       setHypotheses([]);
     }
   }, [incidentId, organizationId]);
+
+  useEffect(() => {
+    if (!incidentId || !organizationId || view !== "incidents") {
+      setIncidentEvents([]);
+      setIncidentEventsCursor(null);
+      setIncidentEventsHasMore(false);
+      return;
+    }
+    let cancelled = false;
+    setIncidentEvents([]);
+    setIncidentEventsCursor(null);
+    setIncidentEventsHasMore(false);
+    setIncidentEventsLoading(true);
+    void apiRequest<IncidentEventPage>(
+      `/v1/incidents/${incidentId}/events?limit=30`,
+      {},
+      organizationId,
+      false,
+    )
+      .then((page) => {
+        if (cancelled) return;
+        setIncidentEvents(page.data);
+        setIncidentEventsCursor(page.page.nextCursor);
+        setIncidentEventsHasMore(page.page.hasMore);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled)
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Incident events could not be loaded.",
+          );
+      })
+      .finally(() => {
+        if (!cancelled) setIncidentEventsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [incidentId, organizationId, view]);
+
+  const loadMoreIncidentEvents = useCallback(async () => {
+    if (
+      !incidentId ||
+      !organizationId ||
+      !incidentEventsCursor ||
+      incidentEventsLoading
+    )
+      return;
+    setIncidentEventsLoading(true);
+    try {
+      const page = await apiRequest<IncidentEventPage>(
+        `/v1/incidents/${incidentId}/events?limit=30&cursor=${encodeURIComponent(incidentEventsCursor)}`,
+        {},
+        organizationId,
+        false,
+      );
+      setIncidentEvents((current) => [...current, ...page.data]);
+      setIncidentEventsCursor(page.page.nextCursor);
+      setIncidentEventsHasMore(page.page.hasMore);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "More incident events could not be loaded.",
+      );
+    } finally {
+      setIncidentEventsLoading(false);
+    }
+  }, [incidentEventsCursor, incidentEventsLoading, incidentId, organizationId]);
 
   useEffect(() => {
     if (!incidentId || view !== "incidents") return;
@@ -806,6 +893,54 @@ export default function Dashboard() {
         cause instanceof Error
           ? cause.message
           : "Investigation could not be queued.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelInvestigation() {
+    if (!activeInvestigation || !organizationId) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await apiRequest(
+        `/v1/investigations/${activeInvestigation.id}/cancel`,
+        { method: "POST" },
+        organizationId,
+      );
+      setMessage("Queued investigation cancelled.");
+      await refreshDetail();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The queued investigation could not be cancelled.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retryInvestigation() {
+    if (!activeInvestigation || !organizationId) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await apiRequest(
+        `/v1/investigations/${activeInvestigation.id}/retry`,
+        { method: "POST" },
+        organizationId,
+      );
+      setMessage("Investigation retry queued.");
+      await refreshDetail();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The investigation could not be retried.",
       );
     } finally {
       setBusy(false);
@@ -1651,15 +1786,16 @@ export default function Dashboard() {
                     <div className="grid gap-0 divide-y divide-line md:grid-cols-2 md:divide-x md:divide-y-0">
                       <div className="p-5">
                         <div className="section-label">Correlated events</div>
-                        {detail.events.length === 0 ? (
+                        {incidentEvents.length === 0 &&
+                        !incidentEventsLoading ? (
                           <p className="mt-3 text-xs text-muted">
                             No event details returned.
                           </p>
                         ) : (
                           <ul className="mt-3 space-y-3">
-                            {detail.events.map((event) => (
+                            {incidentEvents.map((event) => (
                               <li
-                                key={event.eventId}
+                                key={event.linkId}
                                 className="rounded-xl bg-canvas p-3"
                               >
                                 <div className="flex items-center justify-between gap-3">
@@ -1681,6 +1817,22 @@ export default function Dashboard() {
                               </li>
                             ))}
                           </ul>
+                        )}
+                        {incidentEventsLoading && (
+                          <p className="mt-3 text-xs text-muted" role="status">
+                            Loading incident events…
+                          </p>
+                        )}
+                        {incidentEventsHasMore && (
+                          <button
+                            className="button-secondary mt-4 w-full"
+                            disabled={incidentEventsLoading}
+                            onClick={() => void loadMoreIncidentEvents()}
+                          >
+                            {incidentEventsLoading
+                              ? "Loading…"
+                              : "Load more events"}
+                          </button>
                         )}
                       </div>
                       <div className="p-5">
@@ -1728,18 +1880,42 @@ export default function Dashboard() {
                         </p>
                       </div>
                       {canOperateIncidents && (
-                        <button
-                          disabled={busy}
-                          onClick={() => void createInvestigation()}
-                          className="button-secondary"
-                        >
-                          {activeInvestigation &&
-                          ["queued", "running"].includes(
-                            activeInvestigation.status,
-                          )
-                            ? "Queue another run"
-                            : "Investigate with evidence"}
-                        </button>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            disabled={busy}
+                            onClick={() => void createInvestigation()}
+                            className="button-secondary"
+                          >
+                            {activeInvestigation &&
+                            ["queued", "running"].includes(
+                              activeInvestigation.status,
+                            )
+                              ? "Queue another run"
+                              : "Investigate with evidence"}
+                          </button>
+                          {activeInvestigation?.status === "queued" && (
+                            <button
+                              disabled={busy}
+                              onClick={() => void cancelInvestigation()}
+                              className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                            >
+                              Cancel queued run
+                            </button>
+                          )}
+                          {activeInvestigation?.status === "failed" &&
+                            activeInvestigation.errorCode &&
+                            retryableInvestigationErrors.has(
+                              activeInvestigation.errorCode,
+                            ) && (
+                              <button
+                                disabled={busy}
+                                onClick={() => void retryInvestigation()}
+                                className="rounded-lg border border-blue-200 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                              >
+                                Retry investigation
+                              </button>
+                            )}
+                        </div>
                       )}
                     </div>
                     <div className="p-5">

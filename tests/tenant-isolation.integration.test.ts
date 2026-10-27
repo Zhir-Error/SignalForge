@@ -9,11 +9,13 @@ import {
   environments,
   incidentEvents,
   incidents,
+  investigations,
   organizations,
   outbox,
   projects,
   services,
   telemetryEvents,
+  users,
 } from "../packages/db/src/index.js";
 import { correlateEvent } from "../apps/worker/src/correlation.js";
 import { purgeExpiredTelemetry } from "../apps/worker/src/retention.js";
@@ -26,6 +28,11 @@ import {
   createProjectKey,
 } from "../apps/api/src/key-auth.js";
 import { ingestTelemetry } from "../apps/api/src/ingestion.js";
+import {
+  cancelQueuedInvestigation,
+  retryFailedInvestigation,
+} from "../apps/api/src/investigations.js";
+import { markInvestigationRunning } from "../apps/worker/src/investigation-state.js";
 
 loadEnv();
 const connectionString = process.env.DATABASE_URL;
@@ -951,6 +958,378 @@ integration("PostgreSQL tenant policies", () => {
       await database.db
         .delete(organizations)
         .where(eq(organizations.id, organizationId));
+    }
+  }, 30_000);
+
+  it("cancels queued investigations without crossing the worker start transition", async () => {
+    if (!database)
+      throw new Error("The database integration setup did not run.");
+    const organizationId = randomUUID();
+    const projectId = randomUUID();
+    const incidentId = randomUUID();
+    const queuedId = randomUUID();
+    const runningId = randomUUID();
+    const racingId = randomUUID();
+    const actorUserId = `cancel-test-${randomUUID()}`;
+    const suffix = randomUUID().slice(0, 8);
+    const requestId = randomUUID();
+    const now = new Date();
+    try {
+      await database.db.insert(users).values({
+        id: actorUserId,
+        name: "Investigation cancellation integration",
+        email: `${actorUserId}@example.test`,
+      });
+      await database.db.insert(organizations).values({
+        id: organizationId,
+        name: "Investigation cancellation integration",
+        slug: `cancel-investigation-${suffix}`,
+      });
+      await database.withTenant(actorUserId, organizationId, async (tx) => {
+        await tx.insert(projects).values({
+          id: projectId,
+          organizationId,
+          name: "Cancellation project",
+          slug: `cancel-${suffix}`,
+        });
+        await tx.insert(incidents).values({
+          id: incidentId,
+          organizationId,
+          projectId,
+          fingerprint: randomUUID(),
+          groupingVersion: "v1",
+          title: "Cancellation integration incident",
+          status: "open",
+          severity: "error",
+          firstSeenAt: now,
+          lastSeenAt: now,
+        });
+        await tx.insert(investigations).values(
+          [queuedId, runningId, racingId].map((id) => ({
+            id,
+            organizationId,
+            incidentId,
+            status: "queued",
+            provider: "mock",
+            model: "integration-test",
+            promptVersion: "test-v1",
+            createdBy: actorUserId,
+          })),
+        );
+      });
+
+      const cancellation = await cancelQueuedInvestigation(database, {
+        organizationId,
+        investigationId: queuedId,
+        actorUserId,
+        requestId,
+      });
+      expect(cancellation).toMatchObject({
+        kind: "cancelled",
+        investigation: { id: queuedId, status: "cancelled" },
+      });
+      const workerAfterCancellation = await database.withTenant(
+        "signalforge-worker",
+        organizationId,
+        (tx) =>
+          markInvestigationRunning(tx, {
+            organizationId,
+            investigationId: queuedId,
+          }),
+      );
+      expect(workerAfterCancellation).toBe(false);
+
+      const workerStart = await database.withTenant(
+        "signalforge-worker",
+        organizationId,
+        (tx) =>
+          markInvestigationRunning(tx, {
+            organizationId,
+            investigationId: runningId,
+          }),
+      );
+      expect(workerStart).toBe(true);
+      const runningCancellation = await cancelQueuedInvestigation(database, {
+        organizationId,
+        investigationId: runningId,
+        actorUserId,
+        requestId,
+      });
+      expect(runningCancellation).toEqual({
+        kind: "not_cancellable",
+        status: "running",
+      });
+
+      const [raceCancellation, raceWorkerStart] = await Promise.all([
+        cancelQueuedInvestigation(database, {
+          organizationId,
+          investigationId: racingId,
+          actorUserId,
+          requestId,
+        }),
+        database.withTenant("signalforge-worker", organizationId, (tx) =>
+          markInvestigationRunning(tx, {
+            organizationId,
+            investigationId: racingId,
+          }),
+        ),
+      ]);
+      const [racedRow] = await database.withTenant(
+        actorUserId,
+        organizationId,
+        (tx) =>
+          tx
+            .select({ status: investigations.status })
+            .from(investigations)
+            .where(eq(investigations.id, racingId))
+            .limit(1),
+      );
+      if (raceCancellation.kind === "cancelled") {
+        expect(raceWorkerStart).toBe(false);
+        expect(racedRow?.status).toBe("cancelled");
+      } else {
+        expect(raceCancellation).toEqual({
+          kind: "not_cancellable",
+          status: "running",
+        });
+        expect(raceWorkerStart).toBe(true);
+        expect(racedRow?.status).toBe("running");
+      }
+
+      const foreignTenantLookup = await cancelQueuedInvestigation(database, {
+        organizationId: randomUUID(),
+        investigationId: queuedId,
+        actorUserId,
+        requestId,
+      });
+      expect(foreignTenantLookup).toEqual({ kind: "missing" });
+      const auditRows = await database.withTenant(
+        actorUserId,
+        organizationId,
+        (tx) =>
+          tx
+            .select({
+              action: auditLogs.action,
+              resourceId: auditLogs.resourceId,
+            })
+            .from(auditLogs)
+            .where(eq(auditLogs.organizationId, organizationId)),
+      );
+      expect(auditRows).toContainEqual({
+        action: "investigation.cancelled",
+        resourceId: queuedId,
+      });
+      expect(auditRows.some((row) => row.resourceId === runningId)).toBe(false);
+    } finally {
+      await database.db
+        .delete(organizations)
+        .where(eq(organizations.id, organizationId));
+      await database.db.delete(users).where(eq(users.id, actorUserId));
+    }
+  }, 30_000);
+
+  it("retries eligible failed investigations once with a durable outbox item", async () => {
+    if (!database)
+      throw new Error("The database integration setup did not run.");
+    const organizationId = randomUUID();
+    const projectId = randomUUID();
+    const incidentId = randomUUID();
+    const retryId = randomUUID();
+    const raceId = randomUUID();
+    const permanentFailureId = randomUUID();
+    const retryLimitId = randomUUID();
+    const actorUserId = `retry-test-${randomUUID()}`;
+    const suffix = randomUUID().slice(0, 8);
+    const requestId = randomUUID();
+    const now = new Date();
+    try {
+      await database.db.insert(users).values({
+        id: actorUserId,
+        name: "Investigation retry integration",
+        email: `${actorUserId}@example.test`,
+      });
+      await database.db.insert(organizations).values({
+        id: organizationId,
+        name: "Investigation retry integration",
+        slug: `retry-investigation-${suffix}`,
+      });
+      await database.withTenant(actorUserId, organizationId, async (tx) => {
+        await tx.insert(projects).values({
+          id: projectId,
+          organizationId,
+          name: "Retry project",
+          slug: `retry-${suffix}`,
+        });
+        await tx.insert(incidents).values({
+          id: incidentId,
+          organizationId,
+          projectId,
+          fingerprint: randomUUID(),
+          groupingVersion: "v1",
+          title: "Retry integration incident",
+          status: "open",
+          severity: "error",
+          firstSeenAt: now,
+          lastSeenAt: now,
+        });
+        await tx.insert(investigations).values(
+          [retryId, raceId, retryLimitId].map((id) => ({
+            id,
+            organizationId,
+            incidentId,
+            status: "failed",
+            provider: "mock",
+            model: "integration-test",
+            promptVersion: "test-v1",
+            errorCode: "JOB_RETRIES_EXHAUSTED",
+            createdBy: actorUserId,
+          })),
+        );
+        await tx.insert(investigations).values({
+          id: permanentFailureId,
+          organizationId,
+          incidentId,
+          status: "failed",
+          provider: "mock",
+          model: "integration-test",
+          promptVersion: "test-v1",
+          errorCode: "INVALID_PROVIDER_OUTPUT",
+          createdBy: actorUserId,
+        });
+        await tx.insert(auditLogs).values(
+          Array.from({ length: 3 }, () => ({
+            organizationId,
+            actorUserId,
+            action: "investigation.retry_requested",
+            resourceType: "investigation",
+            resourceId: retryLimitId,
+            requestId,
+            metadata: { retryNumber: 1 },
+          })),
+        );
+      });
+
+      const retried = await retryFailedInvestigation(database, {
+        organizationId,
+        investigationId: retryId,
+        actorUserId,
+        requestId,
+      });
+      expect(retried).toEqual({
+        kind: "queued",
+        investigation: { id: retryId, status: "queued" },
+      });
+      const duplicateRetry = await retryFailedInvestigation(database, {
+        organizationId,
+        investigationId: retryId,
+        actorUserId,
+        requestId,
+      });
+      expect(duplicateRetry).toMatchObject({
+        kind: "not_retryable",
+        status: "queued",
+      });
+
+      const [firstRaceResult, secondRaceResult] = await Promise.all([
+        retryFailedInvestigation(database, {
+          organizationId,
+          investigationId: raceId,
+          actorUserId,
+          requestId,
+        }),
+        retryFailedInvestigation(database, {
+          organizationId,
+          investigationId: raceId,
+          actorUserId,
+          requestId,
+        }),
+      ]);
+      expect(
+        [firstRaceResult, secondRaceResult].filter(
+          (result) => result.kind === "queued",
+        ),
+      ).toHaveLength(1);
+      expect(
+        [firstRaceResult, secondRaceResult].filter(
+          (result) =>
+            result.kind === "not_retryable" && result.status === "queued",
+        ),
+      ).toHaveLength(1);
+
+      const permanentFailureRetry = await retryFailedInvestigation(database, {
+        organizationId,
+        investigationId: permanentFailureId,
+        actorUserId,
+        requestId,
+      });
+      expect(permanentFailureRetry).toEqual({
+        kind: "not_retryable",
+        status: "failed",
+        errorCode: "INVALID_PROVIDER_OUTPUT",
+      });
+      const exhaustedManualRetry = await retryFailedInvestigation(database, {
+        organizationId,
+        investigationId: retryLimitId,
+        actorUserId,
+        requestId,
+      });
+      expect(exhaustedManualRetry).toEqual({ kind: "retry_limit" });
+      const foreignTenantLookup = await retryFailedInvestigation(database, {
+        organizationId: randomUUID(),
+        investigationId: retryId,
+        actorUserId,
+        requestId,
+      });
+      expect(foreignTenantLookup).toEqual({ kind: "missing" });
+
+      const retryRows = await database.withTenant(
+        actorUserId,
+        organizationId,
+        (tx) =>
+          tx
+            .select({ topic: outbox.topic, payload: outbox.payload })
+            .from(outbox)
+            .where(
+              and(
+                eq(outbox.organizationId, organizationId),
+                eq(outbox.topic, "investigation.run"),
+              ),
+            ),
+      );
+      expect(
+        retryRows.filter((row) => row.payload.investigationId === retryId),
+      ).toHaveLength(1);
+      expect(
+        retryRows.filter((row) => row.payload.investigationId === raceId),
+      ).toHaveLength(1);
+      const retryAudits = await database.withTenant(
+        actorUserId,
+        organizationId,
+        (tx) =>
+          tx
+            .select({
+              action: auditLogs.action,
+              resourceId: auditLogs.resourceId,
+            })
+            .from(auditLogs)
+            .where(
+              and(
+                eq(auditLogs.organizationId, organizationId),
+                eq(auditLogs.action, "investigation.retry_requested"),
+              ),
+            ),
+      );
+      expect(
+        retryAudits.filter((row) => row.resourceId === retryId),
+      ).toHaveLength(1);
+      expect(
+        retryAudits.filter((row) => row.resourceId === raceId),
+      ).toHaveLength(1);
+    } finally {
+      await database.db
+        .delete(organizations)
+        .where(eq(organizations.id, organizationId));
+      await database.db.delete(users).where(eq(users.id, actorUserId));
     }
   }, 30_000);
 });

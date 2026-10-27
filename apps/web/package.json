@@ -2,6 +2,9 @@
   "name": "@signalforge/web",
   "version": "0.1.0",
   "private": true,
+  "files": [
+    "next.config.mjs"
+  ],
   "type": "module",
   "scripts": {
     "dev": "next dev -p 3000",

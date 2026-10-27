@@ -1,6 +1,6 @@
 # Deployment and operations
 
-The repository includes a Docker Compose development stack with a separate PostgreSQL database for the sample checkout. The application images build from the locked workspace and run as the non-root `node` user. Compose gives the verification runner a read-only root filesystem, bounded `/tmp`, dropped capabilities, no-new-privileges, CPU/memory/process limits, and an internal network shared with the worker and sample service. This is not a production deployment recipe: the generic Dockerfile still copies workspace source and development dependencies, and production-host isolation still needs independent configuration and review.
+The repository includes a local Docker Compose stack with a separate PostgreSQL database for the sample checkout. App runtime images build from the locked workspace and deploy the selected package's production dependency graph and compiled runtime artifacts; the migration profile uses the full builder stage. App containers run with `NODE_ENV=production` as the non-root `node` user. Compose gives the verification runner a read-only root filesystem, bounded `/tmp`, dropped capabilities, no-new-privileges, CPU/memory/process limits, and an internal network shared with the worker and sample service. This is not a production deployment recipe: production-host isolation and configuration still need independent setup and review.
 
 ## Local containers
 
@@ -20,12 +20,12 @@ The Postgres service initializes the restricted `signalforge_app` role on a new 
 
 Before a production deployment, select the hosting platform and complete the following work for that target:
 
-- Build minimal production images containing only runtime dependencies and required artifacts. Keep provider and runner secrets out of the web image.
+- The five application images built locally. Runtime probes passed for API liveness/readiness, demo-service health, the web routes and auth rewrite, and the registered recovery scenario through the isolated runner. The final images omit workspace source, `.env`, and `.git` and run as UID 1000. The API and worker package trees still include unused optional Better Auth peers such as Next.js and test tooling, so dependency trimming and smaller runtime images remain release work. Inspect images before release and keep provider and runner secrets out of the web image.
 - Place PostgreSQL, Redis, API, worker, and web in private network segments. Expose only the web/API ingress needed by users and telemetry senders.
 - Apply migrations as a one-shot release job using the owner credential; application services should use the restricted runtime role.
 - Keep the verification runner and sample service on a private network. The runner calls one authenticated registered-scenario endpoint and accepts no shell commands. The local Compose stack limits and isolates the runner; apply equivalent CPU, memory, filesystem, execution-time, and network restrictions to the production runner and sample service. Do not mount the Docker socket or application secrets into either service.
 - Configure TLS, a trusted proxy allowlist, cookie settings, rate limits, log redaction, and secret rotation. `TRUSTED_PROXY_IPS` must reflect the actual proxy chain.
-- Ingestion and investigation request limits currently use a process-local store keyed by client IP. Configure a shared rate-limit store before running multiple API replicas.
+- The API-key, organization, and Fastify/IP request limits, including the investigation limit, use Redis when `REDIS_URL` is configured; local Compose supplies Redis. Without Redis they fall back to process-local stores for development. Redis errors fail closed because rate-limit storage skips no errors. Configure shared Redis before horizontally scaling API replicas and monitor Redis availability.
 - Provide email delivery before presenting invitations as emailed. Invitation creation currently returns a link for manual delivery.
 - Password reset is disabled until a trusted email delivery provider and reset-link handling are configured. Better Auth does not return reset tokens to callers.
 - Set `AI_PROVIDER=openai`, `AI_API_KEY`, and `AI_MODEL` only when live investigation is intended. The mock provider is the default and remains explicitly labelled.

@@ -47,6 +47,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: builder
       args:
         APP_PACKAGE: "@signalforge/api"
     command: ["pnpm", "db:migrate"]
@@ -62,7 +63,7 @@ services:
       args:
         APP_PACKAGE: "@signalforge/api"
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
       API_BASE_URL: http://api:4000
       DATABASE_URL: postgresql://signalforge_app:signalforge_app_dev@postgres:5432/signalforge
@@ -75,6 +76,8 @@ services:
       TELEMETRY_RETENTION_DAYS: ${TELEMETRY_RETENTION_DAYS:-14}
       MAX_EVENT_PAYLOAD_BYTES: ${MAX_EVENT_PAYLOAD_BYTES:-32768}
       MAX_BATCH_EVENTS: ${MAX_BATCH_EVENTS:-100}
+      INGEST_RATE_LIMIT_PER_MINUTE: ${INGEST_RATE_LIMIT_PER_MINUTE:-600}
+      INGEST_RATE_LIMIT_PER_ORGANIZATION_PER_MINUTE: ${INGEST_RATE_LIMIT_PER_ORGANIZATION_PER_MINUTE:-6000}
       REDIS_URL: redis://redis:6379
     ports:
       - "4000:4000"
@@ -101,7 +104,7 @@ services:
       args:
         APP_PACKAGE: "@signalforge/worker"
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       DATABASE_URL: postgresql://signalforge_app:signalforge_app_dev@postgres:5432/signalforge
       REDIS_URL: redis://redis:6379
       AI_PROVIDER: ${AI_PROVIDER:-mock}
@@ -129,7 +132,7 @@ services:
       args:
         APP_PACKAGE: "@signalforge/demo-service"
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       DEMO_SERVICE_PORT: 4100
       DEMO_DATABASE_URL: postgresql://signalforge_demo:signalforge_demo_dev@demo-postgres:5432/signalforge_demo
       DEMO_API_KEY: ${DEMO_API_KEY:-}
@@ -163,9 +166,9 @@ services:
       dockerfile: Dockerfile
       args:
         APP_PACKAGE: "@signalforge/verification-runner"
-    command: ["node", "apps/verification-runner/dist/index.js"]
+    command: ["node", "dist/index.js"]
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       VERIFICATION_RUNNER_HOST: 0.0.0.0
       VERIFICATION_RUNNER_PORT: 4200
       VERIFICATION_RUNNER_SECRET: ${VERIFICATION_RUNNER_SECRET:?Set VERIFICATION_RUNNER_SECRET in .env}

@@ -216,10 +216,12 @@ export const investigationResultSchema = z
   })
   .strict();
 
-export const cursorPageSchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  before: z.string().datetime({ offset: true }).optional(),
-});
+export const cursorPageSchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    cursor: z.string().min(1).max(2048).optional(),
+  })
+  .strict();
 
 export type TelemetryEventInput = z.infer<typeof telemetryEventSchema>;
 export type TelemetryBatchInput = z.infer<typeof telemetryBatchSchema>;
