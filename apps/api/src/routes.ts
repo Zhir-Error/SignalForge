@@ -1660,6 +1660,103 @@ export async function registerRoutes(
     },
   );
 
+  app.post<{ Params: { keyId: string } }>(
+    "/v1/api-keys/:keyId/rotate",
+    async (request, reply) => {
+      const keyId = requireUuid(request.params.keyId);
+      const organizationId = organizationHeader(request);
+      const member = await requireMember(
+        request,
+        auth,
+        database,
+        organizationId,
+      );
+      requireRole(member, "admin");
+      const key = createProjectKey();
+      const result = await database.withTenant(
+        member.actor.userId,
+        organizationId,
+        async (tx) => {
+          const [existing] = await tx
+            .select({
+              id: apiKeys.id,
+              projectId: apiKeys.projectId,
+              name: apiKeys.name,
+              scopes: apiKeys.scopes,
+              expiresAt: apiKeys.expiresAt,
+              revokedAt: apiKeys.revokedAt,
+            })
+            .from(apiKeys)
+            .where(
+              and(
+                eq(apiKeys.id, keyId),
+                eq(apiKeys.organizationId, organizationId),
+              ),
+            )
+            .limit(1);
+          if (!existing || existing.revokedAt)
+            throw new ApiError(
+              404,
+              "RESOURCE_NOT_FOUND",
+              "The requested resource was not found.",
+            );
+          const expiresAt =
+            existing.expiresAt && existing.expiresAt > new Date()
+              ? existing.expiresAt
+              : null;
+          const [created] = await tx
+            .insert(apiKeys)
+            .values({
+              organizationId,
+              projectId: existing.projectId,
+              name: existing.name,
+              keyPrefix: key.prefix,
+              keyHash: key.hash,
+              scopes: existing.scopes,
+              expiresAt,
+              createdBy: member.actor.userId,
+            })
+            .returning({
+              id: apiKeys.id,
+              name: apiKeys.name,
+              keyPrefix: apiKeys.keyPrefix,
+              scopes: apiKeys.scopes,
+              expiresAt: apiKeys.expiresAt,
+              createdAt: apiKeys.createdAt,
+            });
+          if (!created) throw new Error("API_KEY_ROTATE_FAILED");
+          await tx
+            .update(apiKeys)
+            .set({ revokedAt: new Date() })
+            .where(
+              and(
+                eq(apiKeys.id, existing.id),
+                eq(apiKeys.organizationId, organizationId),
+                isNull(apiKeys.revokedAt),
+              ),
+            );
+          await tx.insert(auditLogs).values({
+            organizationId,
+            actorUserId: member.actor.userId,
+            action: "api_key.rotated",
+            resourceType: "api_key",
+            resourceId: created.id,
+            requestId: request.id,
+            metadata: {
+              previousKeyId: existing.id,
+              prefix: created.keyPrefix,
+            },
+          });
+          return created;
+        },
+      );
+      return reply.code(201).send({
+        data: { ...result, plaintext: key.plaintext, shownOnce: true },
+        requestId: request.id,
+      });
+    },
+  );
+
   app.post(
     "/v1/ingest/events",
     {

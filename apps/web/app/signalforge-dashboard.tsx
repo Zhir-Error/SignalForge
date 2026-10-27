@@ -1039,6 +1039,33 @@ export default function Dashboard() {
     }
   }
 
+  async function rotateKey(keyId: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const rotated = await apiRequest<{
+        id: string;
+        name: string;
+        plaintext: string;
+      }>(
+        `/v1/api-keys/${keyId}/rotate`,
+        { method: "POST" },
+        organizationId,
+      );
+      setOneTimeKey({ plaintext: rotated.plaintext, name: rotated.name });
+      setMessage("Key rotated. Copy the new secret now; the previous key is revoked.");
+      await refreshKeys();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "API key could not be rotated.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function revokeKey(keyId: string) {
     setBusy(true);
     setError("");
@@ -2165,13 +2192,22 @@ export default function Dashboard() {
                     {!key.revokedAt &&
                       organization &&
                       ["owner", "admin"].includes(organization.role) && (
-                        <button
-                          disabled={busy}
-                          onClick={() => void revokeKey(key.id)}
-                          className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50"
-                        >
-                          Revoke key
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            disabled={busy}
+                            onClick={() => void rotateKey(key.id)}
+                            className="rounded-lg border border-amber-200 px-3 py-2 text-xs font-medium text-amber-700 hover:bg-amber-50"
+                          >
+                            Rotate key
+                          </button>
+                          <button
+                            disabled={busy}
+                            onClick={() => void revokeKey(key.id)}
+                            className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50"
+                          >
+                            Revoke key
+                          </button>
+                        </div>
                       )}
                   </div>
                 ))

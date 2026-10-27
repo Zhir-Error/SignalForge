@@ -398,6 +398,22 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Ok" }
         "403": { $ref: "#/components/responses/Error" }
+  /v1/api-keys/{keyId}/rotate:
+    parameters:
+      - name: keyId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/OrganizationHeader"
+    post:
+      tags: [Projects]
+      summary: Rotate a project API key, returning a new secret and revoking the previous key
+      operationId: rotateProjectApiKey
+      security: [{ sessionCookie: [] }, { secureSessionCookie: [] }]
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/ingest/events:
     post:
       tags: [Telemetry]
