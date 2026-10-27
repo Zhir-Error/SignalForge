@@ -17,7 +17,7 @@ test("a user can complete the incident workflow without cross-tenant access", as
   await page.goto("/");
   await expect(
     page.getByRole("heading", {
-      name: "Investigate the failure. Prove the fix.",
+      name: "When production gets loud, find the signal in it.",
     }),
   ).toBeVisible();
   const unauthenticatedStream = await page.request.get(
@@ -27,7 +27,7 @@ test("a user can complete the incident workflow without cross-tenant access", as
     unauthenticatedStream.status(),
     await unauthenticatedStream.text(),
   ).toBe(401);
-  await page.getByRole("link", { name: "Create a workspace" }).click();
+  await page.getByRole("link", { name: "Enter the workspace" }).click();
   await page
     .getByRole("button", { name: "New to SignalForge? Create an account" })
     .click();
