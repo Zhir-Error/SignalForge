@@ -593,6 +593,72 @@ test("a user can complete the incident workflow without cross-tenant access", as
   );
   expect(unauthenticatedRunner.status()).toBe(401);
 
+  const keysBeforeRotationResponse = await page.request.get(
+    `http://localhost:4000/v1/projects/${ownerProjectId}/api-keys`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(keysBeforeRotationResponse.status()).toBe(200);
+  const keysBeforeRotationPayload: unknown =
+    await keysBeforeRotationResponse.json();
+  if (
+    !isObject(keysBeforeRotationPayload) ||
+    !Array.isArray(keysBeforeRotationPayload.data)
+  )
+    throw new Error("The API key list before rotation was malformed.");
+  const activeKeyBeforeRotation = keysBeforeRotationPayload.data.find(
+    (item): item is Record<string, unknown> =>
+      isObject(item) && item.revokedAt === null,
+  );
+  if (
+    !activeKeyBeforeRotation ||
+    typeof activeKeyBeforeRotation.id !== "string"
+  )
+    throw new Error("No active API key is available for rotation.");
+  const rotationApiKeyId = activeKeyBeforeRotation.id;
+
+  const keyRotationResponse = await page.request.post(
+    `http://localhost:4000/v1/api-keys/${rotationApiKeyId}/rotate`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(keyRotationResponse.status(), await keyRotationResponse.text()).toBe(
+    201,
+  );
+  const keyRotationPayload: unknown = await keyRotationResponse.json();
+  if (
+    !isObject(keyRotationPayload) ||
+    !isObject(keyRotationPayload.data) ||
+    typeof keyRotationPayload.data.plaintext !== "string" ||
+    typeof keyRotationPayload.data.id !== "string"
+  )
+    throw new Error("The rotated API key response was malformed.");
+  const rotatedProjectKey = keyRotationPayload.data.plaintext;
+  const rotatedKeyId = keyRotationPayload.data.id;
+  expect(rotatedKeyId).not.toBe(rotationApiKeyId);
+  const keysAfterRotationResponse = await page.request.get(
+    `http://localhost:4000/v1/projects/${ownerProjectId}/api-keys`,
+    { headers: { "x-organization-id": createdOrganizationId } },
+  );
+  expect(keysAfterRotationResponse.status()).toBe(200);
+  const keysAfterRotationPayload: unknown =
+    await keysAfterRotationResponse.json();
+  if (
+    !isObject(keysAfterRotationPayload) ||
+    !Array.isArray(keysAfterRotationPayload.data)
+  )
+    throw new Error("The API key list after rotation was malformed.");
+  const oldKeyAfterRotation = keysAfterRotationPayload.data.find(
+    (item): item is Record<string, unknown> =>
+      isObject(item) && item.id === rotationApiKeyId,
+  );
+  const newKeyAfterRotation = keysAfterRotationPayload.data.find(
+    (item): item is Record<string, unknown> =>
+      isObject(item) && item.id === rotatedKeyId,
+  );
+  if (!oldKeyAfterRotation || !newKeyAfterRotation)
+    throw new Error("Rotation did not leave both old and new key records.");
+  expect(oldKeyAfterRotation.revokedAt).not.toBeNull();
+  expect(newKeyAfterRotation.revokedAt).toBeNull();
+
   await page.getByRole("button", { name: "Access" }).click();
   await page.getByPlaceholder("person@example.com").fill(invitedEmail);
   await page.locator('select[name="inviteRole"]').selectOption("viewer");
@@ -926,6 +992,11 @@ test("a user can complete the incident workflow without cross-tenant access", as
     { headers: secondTenantHeaders },
   );
   expect(crossTenantKeyRevoke.status()).toBe(404);
+  const crossTenantKeyRotate = await isolatedTenantPage.request.post(
+    `http://localhost:4000/v1/api-keys/${ownerApiKeyId}/rotate`,
+    { headers: secondTenantHeaders },
+  );
+  expect(crossTenantKeyRotate.status()).toBe(404);
   const crossTenantWrites = [
     await isolatedTenantPage.request.post(
       `http://localhost:4000/v1/investigations/${ownerInvestigationId}/cancel`,

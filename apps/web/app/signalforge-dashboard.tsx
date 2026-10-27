@@ -1047,13 +1047,11 @@ export default function Dashboard() {
         id: string;
         name: string;
         plaintext: string;
-      }>(
-        `/v1/api-keys/${keyId}/rotate`,
-        { method: "POST" },
-        organizationId,
-      );
+      }>(`/v1/api-keys/${keyId}/rotate`, { method: "POST" }, organizationId);
       setOneTimeKey({ plaintext: rotated.plaintext, name: rotated.name });
-      setMessage("Key rotated. Copy the new secret now; the previous key is revoked.");
+      setMessage(
+        "Key rotated. Copy the new secret now; the previous key is revoked.",
+      );
       await refreshKeys();
     } catch (cause) {
       setError(
